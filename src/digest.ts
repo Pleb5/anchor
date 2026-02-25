@@ -17,17 +17,14 @@ import {
   getParentId,
   getIdFilters,
   getReplyFilters,
-  NOTE,
-  COMMENT,
-  REACTION,
   displayProfile,
   displayPubkey,
+  getTagValue,
 } from '@welshman/util'
 import { Loader, AdapterContext, makeLoader, SocketAdapter } from '@welshman/net'
 import { Router, addMinimalFallbacks } from '@welshman/router'
 import {
   makeIntersectionFeed,
-  makeKindFeed,
   simplifyFeed,
   Feed,
   makeCreatedAtFeed,
@@ -52,6 +49,30 @@ type DigestData = {
   context: TrustedEvent[]
 }
 
+const GIT_COMMENT = 1111
+const GIT_LABEL = 1985
+const GIT_PATCH = 1617
+const GIT_PULL_REQUEST = 1618
+const GIT_PULL_REQUEST_UPDATE = 1619
+const GIT_ISSUE = 1621
+const GIT_STATUS_OPEN = 1630
+const GIT_STATUS_APPLIED = 1631
+const GIT_STATUS_CLOSED = 1632
+const GIT_STATUS_DRAFT = 1633
+
+const REPO_KINDS = new Set([
+  GIT_COMMENT,
+  GIT_LABEL,
+  GIT_PATCH,
+  GIT_PULL_REQUEST,
+  GIT_PULL_REQUEST_UPDATE,
+  GIT_ISSUE,
+  GIT_STATUS_OPEN,
+  GIT_STATUS_APPLIED,
+  GIT_STATUS_CLOSED,
+  GIT_STATUS_DRAFT,
+])
+
 export class Digest {
   authd = new Set<string>()
   since: number
@@ -61,14 +82,10 @@ export class Digest {
 
   constructor(readonly alert: EmailAlert) {
     this.since = dateToSeconds(getCronDate(alert.cron, -2))
-    this.context = {getAdapter: (url: string) => new SocketAdapter(getAlertSocket(url, alert))}
-    this.load = makeLoader({delay: 500, timeout: 5000, threshold: 0.8, context: this.context})
+    this.context = { getAdapter: (url: string) => new SocketAdapter(getAlertSocket(url, alert)) }
+    this.load = makeLoader({ delay: 500, timeout: 5000, threshold: 0.8, context: this.context })
     this.feed = simplifyFeed(
-      makeIntersectionFeed(
-        makeKindFeed(NOTE),
-        makeCreatedAtFeed({ since: this.since }),
-        makeUnionFeed(...alert.feeds)
-      )
+      makeIntersectionFeed(makeCreatedAtFeed({ since: this.since }), makeUnionFeed(...alert.feeds))
     )
   }
 
@@ -82,7 +99,7 @@ export class Digest {
       return defaultHandler
     }
 
-    const events = await this.load({relays, filters})
+    const events = await this.load({ relays, filters })
     const getTemplates = (e: TrustedEvent) => e.tags.filter(nthEq(0, 'web')).map(nth(1))
     const templates = events.flatMap((e) => getTemplates(e))
 
@@ -118,7 +135,7 @@ export class Digest {
             await loadProfile(e.pubkey)
 
             const relays = Router.get().Replies(e).policy(addMinimalFallbacks).getUrls()
-            const filters = getReplyFilters(events, { kinds: [NOTE, COMMENT, REACTION] })
+            const filters = getReplyFilters(events, { kinds: [GIT_COMMENT] })
 
             for (const reply of await this.load({
               relays,
@@ -142,7 +159,7 @@ export class Digest {
 
     await ctrl.load(1000)
 
-    console.log(`digest: loading replies and reactions for ${this.alert.address}`)
+    console.log(`digest: loading replies for ${this.alert.address}`)
 
     await Promise.all(promises)
 
@@ -153,18 +170,16 @@ export class Digest {
 
   buildParameters = async (data: DigestData) => {
     const getEventVariables = (event: TrustedEvent) => {
-      const parsed = truncate(parse(event), { minLength: 400, maxLength: 800, mediaLength: 50 })
+      const content = getDigestContent(event)
 
       return {
+        Type: getTypeLabel(event),
         Link: buildLink(event, handler),
         Timestamp: formatter.format(secondsToDate(event.created_at)),
         Icon: profilesByPubkey.get().get(event.pubkey)?.picture,
         Name: displayProfileByPubkey(event.pubkey),
-        Content: renderAsHtml(parsed, { createElement, renderEntity }).toString(),
-        Replies:
-          repliesByParentId.get(event.id)?.filter((e) => [COMMENT, NOTE].includes(e.kind))
-            ?.length || 0,
-        Reactions: repliesByParentId.get(event.id)?.filter(spec({ kind: REACTION }))?.length || 0,
+        Content: content,
+        Replies: repliesByParentId.get(event.id)?.filter(spec({ kind: GIT_COMMENT }))?.length || 0,
       }
     }
 
@@ -234,3 +249,68 @@ const renderEntity = (entity: string) => {
 
   return display
 }
+
+const getTypeLabel = (event: TrustedEvent) => {
+  if (event.kind === GIT_ISSUE) return 'Issue'
+  if (event.kind === GIT_PATCH) return 'Patch'
+  if (event.kind === GIT_PULL_REQUEST) return 'Pull request'
+  if (event.kind === GIT_PULL_REQUEST_UPDATE) return 'PR update'
+  if (event.kind === GIT_STATUS_OPEN) return 'Status: open'
+  if (event.kind === GIT_STATUS_APPLIED) return 'Status: applied'
+  if (event.kind === GIT_STATUS_CLOSED) return 'Status: closed'
+  if (event.kind === GIT_STATUS_DRAFT) return 'Status: draft'
+  if (event.kind === GIT_LABEL) {
+    const label = getTagValue('l', event.tags)
+    if (label === 'assignee') return 'Assignment'
+    if (label === 'reviewer') return 'Review request'
+    return 'Label'
+  }
+  if (event.kind === GIT_COMMENT) return 'Comment'
+  return 'Post'
+}
+
+const getDigestContent = (event: TrustedEvent) => {
+  const isRepoKind = REPO_KINDS.has(event.kind)
+  const summary = getRepoSummaryText(event)
+  const content = summary || event.content || ''
+  const parsed = truncate(
+    parse({ ...event, content }),
+    isRepoKind
+      ? { minLength: 80, maxLength: 280, mediaLength: 0 }
+      : { minLength: 400, maxLength: 800, mediaLength: 50 }
+  )
+
+  return renderAsHtml(parsed, { createElement, renderEntity }).toString()
+}
+
+const getRepoSummaryText = (event: TrustedEvent) => {
+  if (!REPO_KINDS.has(event.kind)) return ''
+
+  const content = (event.content || '').trim()
+  if (!content) return ''
+
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (lines.length === 0) return ''
+
+  if (event.kind === GIT_PATCH || event.kind === GIT_PULL_REQUEST) {
+    const subject = lines.find((line) => line.toLowerCase().startsWith('subject:'))
+    if (subject) return subject.replace(/^subject:\s*/i, '')
+    const first = lines.find((line) => !isPatchMetaLine(line))
+    return first || lines[0]
+  }
+
+  return lines[0]
+}
+
+const isPatchMetaLine = (line: string) =>
+  line.startsWith('diff --git') ||
+  line.startsWith('index ') ||
+  line.startsWith('+++') ||
+  line.startsWith('---') ||
+  line.startsWith('@@') ||
+  line.startsWith('From ') ||
+  line.startsWith('Date:') ||
+  line.startsWith('Signed-off-by')
