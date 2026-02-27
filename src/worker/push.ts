@@ -117,7 +117,7 @@ export class MultiplexingAdapter extends AbstractAdapter {
 
 const getNotificationBody = (event: TrustedEvent) => {
   if (event.kind === WRAP) {
-    return ""
+    return ''
   }
 
   const parsed = truncate(parse(event), {
@@ -183,6 +183,10 @@ const sendIosNotification = async (alert: IosAlert, event: TrustedEvent, relays:
   })
 
   try {
+    if (!apnProvider) {
+      throw new Error('APNs is not configured')
+    }
+
     const { sent, failed } = await apnProvider.send(notification, alert.deviceToken)
 
     if (failed.length > 0) {
@@ -231,7 +235,9 @@ const sendAndroidNotification = async (
 const createListener = (alert: PushAlert) => {
   const tracker = new Tracker()
   const feed = simplifyFeed(makeUnionFeed(...alert.feeds))
-  const context = { getAdapter: (url: string) => new MultiplexingAdapter(getAlertSocket(url, alert)) }
+  const context = {
+    getAdapter: (url: string) => new MultiplexingAdapter(getAlertSocket(url, alert)),
+  }
 
   const promise = call(async () => {
     console.log(`listener: loading relay selections for ${alert.address}`)

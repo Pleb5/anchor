@@ -1,5 +1,5 @@
 import { CronExpressionParser } from 'cron-parser'
-import { defaultSocketPolicies, SocketEvent, makeSocketPolicyAuth, makeSocket, Socket } from '@welshman/net'
+import { defaultSocketPolicies, makeSocketPolicyAuth, makeSocket, Socket } from '@welshman/net'
 import { tryCatch, int, HOUR, removeNil, LOCALE, TIMEZONE } from '@welshman/lib'
 import { Feed, ValidationError, validateFeed } from '@welshman/feeds'
 import { Nip01Signer, ISigner } from '@welshman/signer'
@@ -14,7 +14,7 @@ import {
   ALERT_IOS,
   ALERT_ANDROID,
 } from '@welshman/util'
-import { appSigner } from './env.js'
+import { ANDROID_PUSH_ENABLED, IOS_PUSH_ENABLED, WEB_PUSH_ENABLED, appSigner } from './env.js'
 import * as db from './database.js'
 
 export const alertKinds = [ALERT_EMAIL, ALERT_WEB, ALERT_IOS, ALERT_ANDROID]
@@ -75,9 +75,28 @@ export const isAndroidAlert = (alert: Alert): alert is AndroidAlert =>
 export const isPushAlert = (alert: Alert): alert is PushAlert =>
   isWebAlert(alert) || isIosAlert(alert) || isAndroidAlert(alert)
 
+export const isPushEnabledForAlert = (alert: Alert) => {
+  if (isWebAlert(alert)) return WEB_PUSH_ENABLED
+  if (isIosAlert(alert)) return IOS_PUSH_ENABLED
+  if (isAndroidAlert(alert)) return ANDROID_PUSH_ENABLED
+  return false
+}
+
 export const getAlertError = async (alert: Alert) => {
   if (alert.failed_reason) {
     return alert.failed_reason
+  }
+
+  if (isWebAlert(alert) && !WEB_PUSH_ENABLED) {
+    return 'Web push notifications are disabled on this instance'
+  }
+
+  if (isIosAlert(alert) && !IOS_PUSH_ENABLED) {
+    return 'iOS push notifications are disabled on this instance'
+  }
+
+  if (isAndroidAlert(alert) && !ANDROID_PUSH_ENABLED) {
+    return 'Android push notifications are disabled on this instance'
   }
 
   if (isEmailAlert(alert)) {
@@ -215,7 +234,7 @@ export const getAlertClaim = (url: string, alert: BaseAlert) => {
     }
   }
 
-  return ""
+  return ''
 }
 
 const signersByClaimUrl = new Map<string, Promise<ISigner>>()
@@ -228,7 +247,7 @@ export const getAlertSigner = async (url: string, alert: BaseAlert) => {
 
   if (!signer) {
     signer = claim
-      ? db.getOrCreateClaim(url, claim).then(secret => Nip01Signer.fromSecret(secret))
+      ? db.getOrCreateClaim(url, claim).then((secret) => Nip01Signer.fromSecret(secret))
       : Promise.resolve(Nip01Signer.ephemeral())
 
     signersByClaimUrl.set(claimUrl, signer)

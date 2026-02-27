@@ -1,4 +1,4 @@
-import { isEmailAlert, isPushAlert, Alert } from '../alert.js'
+import { isEmailAlert, isPushAlert, isPushEnabledForAlert, Alert } from '../alert.js'
 import { addListener, removeListener } from './push.js'
 import { addJob, removeJob } from './email.js'
 
@@ -9,7 +9,7 @@ export const registerAlert = (alert: Alert) => {
     addJob(alert)
   }
 
-  if (isPushAlert(alert)) {
+  if (isPushAlert(alert) && isPushEnabledForAlert(alert)) {
     addListener(alert)
   }
 }
