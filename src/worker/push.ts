@@ -20,12 +20,7 @@ import {
   isClientClose,
   ClientMessageType,
 } from '@welshman/net'
-import {
-  loadRelaySelections,
-  makeGetPubkeysForScope,
-  makeGetPubkeysForWOTRange,
-  loadWot,
-} from '../repository.js'
+import { loadRelaySelections, makeGetPubkeysForScope } from '../repository.js'
 import {
   PushAlert,
   WebAlert,
@@ -244,10 +239,6 @@ const createListener = (alert: PushAlert) => {
 
     await loadRelaySelections(alert.pubkey)
 
-    console.log(`listener: loading web of trust for ${alert.address}`)
-
-    await loadWot(alert.pubkey, feed)
-
     console.log(`listener: waiting for events for ${alert.address}`)
 
     const controller = new FeedController({
@@ -256,7 +247,7 @@ const createListener = (alert: PushAlert) => {
       context,
       signer: appSigner,
       getPubkeysForScope: makeGetPubkeysForScope(alert.pubkey),
-      getPubkeysForWOTRange: makeGetPubkeysForWOTRange(alert.pubkey),
+      getPubkeysForWOTRange: () => [],
       onEvent: (event: TrustedEvent) => {
         if (event.pubkey === alert.pubkey) return
 

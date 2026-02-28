@@ -20,6 +20,7 @@ import {
   displayProfile,
   displayPubkey,
   getTagValue,
+  Address,
 } from '@welshman/util'
 import { Loader, AdapterContext, makeLoader, SocketAdapter } from '@welshman/net'
 import { Router, addMinimalFallbacks } from '@welshman/router'
@@ -39,8 +40,6 @@ import {
   loadRelaySelections,
   loadProfile,
   makeGetPubkeysForScope,
-  makeGetPubkeysForWOTRange,
-  loadWot,
 } from './repository.js'
 import { appSigner } from './env.js'
 
@@ -72,6 +71,8 @@ const REPO_KINDS = new Set([
   GIT_STATUS_CLOSED,
   GIT_STATUS_DRAFT,
 ])
+
+const PATCH_KINDS = new Set([GIT_PATCH, GIT_PULL_REQUEST, GIT_PULL_REQUEST_UPDATE])
 
 export class Digest {
   authd = new Set<string>()
@@ -111,10 +112,6 @@ export class Digest {
 
     await loadRelaySelections(this.alert.pubkey)
 
-    console.log(`digest: loading web of trust for ${this.alert.address}`)
-
-    await loadWot(this.alert.pubkey, this.feed)
-
     const seen = new Set<string>()
     const events: TrustedEvent[] = []
     const context: TrustedEvent[] = []
@@ -123,7 +120,7 @@ export class Digest {
       feed: this.feed,
       signer: appSigner,
       getPubkeysForScope: makeGetPubkeysForScope(this.alert.pubkey),
-      getPubkeysForWOTRange: makeGetPubkeysForWOTRange(this.alert.pubkey),
+      getPubkeysForWOTRange: () => [],
       onEvent: (e) => {
         seen.add(e.id)
         events.push(e)
@@ -216,7 +213,62 @@ export class Digest {
 
 // Utilities
 
+const applyTemplate = (template: string, replacements: Record<string, string>) => {
+  let output = template
+  for (const [key, value] of Object.entries(replacements)) {
+    output = output.split(`<${key}>`).join(value)
+  }
+  return output
+}
+
+const getRepoAddress = (event: TrustedEvent) => {
+  if (event.kind === GIT_COMMENT) {
+    return getTagValue('repo', event.tags) || getTagValue('a', event.tags)
+  }
+
+  return getTagValue('a', event.tags)
+}
+
+const toRepoNaddr = (repoAddr: string) => {
+  const [kindStr, pubkey, ...identifierParts] = repoAddr.split(':')
+  const kind = Number.parseInt(kindStr, 10)
+  if (!pubkey || identifierParts.length === 0 || Number.isNaN(kind)) {
+    return ''
+  }
+
+  const identifier = identifierParts.join(':')
+  try {
+    return new Address(kind, pubkey, identifier).toNaddr()
+  } catch {
+    return ''
+  }
+}
+
+const getGitSection = (event: TrustedEvent) => (PATCH_KINDS.has(event.kind) ? 'patches' : 'issues')
+
+const buildGitLink = (event: TrustedEvent, handler: string) => {
+  if (
+    !handler.includes('<repo_naddr>') &&
+    !handler.includes('<section>') &&
+    !handler.includes('<id>')
+  ) {
+    return ''
+  }
+
+  const repoAddr = getRepoAddress(event)
+  if (!repoAddr) return ''
+
+  const repoNaddr = toRepoNaddr(repoAddr)
+  if (!repoNaddr) return ''
+
+  const section = getGitSection(event)
+  return applyTemplate(handler, { repo_naddr: repoNaddr, section, id: event.id })
+}
+
 const buildLink = (event: TrustedEvent, handler: string) => {
+  const gitLink = buildGitLink(event, handler)
+  if (gitLink) return gitLink
+
   const relays = Router.get().Event(event).getUrls()
   const nevent = neventEncode({ ...event, relays })
 
