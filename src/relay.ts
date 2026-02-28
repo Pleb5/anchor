@@ -171,6 +171,11 @@ export class Connection {
 
     const duplicate = await getAlert(getAddress(event))
 
+    if (duplicate?.event?.id === event.id) {
+      this.send(['OK', event.id, true, ''])
+      return
+    }
+
     if (gt(duplicate?.deleted_at, event.created_at)) {
       return this.send(['OK', event.id, false, 'Alert has been deleted'])
     }
