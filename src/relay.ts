@@ -16,6 +16,7 @@ import { appSigner } from './env.js'
 import { getAlertsForPubkey, getAlert } from './database.js'
 import { addAlert, processDelete } from './actions.js'
 import { alertKinds, createStatusEvent } from './alert.js'
+import { logAlertEvent } from './logger.js'
 
 type AuthState = {
   challenge: string
@@ -164,14 +165,28 @@ export class Connection {
 
   private async handleAlertRequest(event: SignedEvent) {
     const pubkey = await appSigner.getPubkey()
+    const address = getAddress(event)
+
+    logAlertEvent({
+      status: 'received',
+      eventId: event.id,
+      address,
+      pubkey: event.pubkey,
+    })
 
     if (!getTagValues('p', event.tags).includes(pubkey)) {
       return this.send(['OK', event.id, false, 'Event must p-tag this relay'])
     }
 
-    const duplicate = await getAlert(getAddress(event))
+    const duplicate = await getAlert(address)
 
     if (duplicate?.event?.id === event.id) {
+      logAlertEvent({
+        status: 'duplicate',
+        eventId: event.id,
+        address,
+        pubkey: event.pubkey,
+      })
       this.send(['OK', event.id, true, ''])
       return
     }
@@ -184,16 +199,36 @@ export class Connection {
     try {
       plaintext = await decrypt(appSigner, event.pubkey, event.content)
     } catch (e) {
+      logAlertEvent({
+        status: 'decrypt_failed',
+        eventId: event.id,
+        address,
+        pubkey: event.pubkey,
+        detail: String(e),
+      })
       return this.send(['OK', event.id, false, 'Failed to decrypt event content'])
     }
 
     const tags = parseJson(plaintext)
 
     if (!Array.isArray(tags)) {
+      logAlertEvent({
+        status: 'invalid_tags',
+        eventId: event.id,
+        address,
+        pubkey: event.pubkey,
+      })
       return this.send(['OK', event.id, false, 'Encrypted tags are not an array'])
     }
 
     const alert = await addAlert({ event, tags })
+
+    logAlertEvent({
+      status: 'accepted',
+      eventId: event.id,
+      address,
+      pubkey: event.pubkey,
+    })
 
     this.send(['OK', event.id, true, ''])
 
