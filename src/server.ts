@@ -118,8 +118,7 @@ export function createServer(dependencies: ServerDependencies) {
       })
       return
     }
-    const html = await render('../web/dist/index.html').catch(() => render('pages/index.html'))
-    response.type('html').send(html)
+    response.type('html').send(await render('pages/index.html'))
   })
 
   addRoute('get', '/confirm', async (request, response) => {
