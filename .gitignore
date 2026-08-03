@@ -3,6 +3,7 @@
 .direnv/
 node_modules
 yarn-error.log
+*.log
 anchor.db
 *firebase*
 *.p8

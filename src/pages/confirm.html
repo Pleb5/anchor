@@ -3,21 +3,21 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Unsubscribe from Budabit digest</title>
+    <title>Confirm Budabit digest</title>
     <style>
       body { font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #f3f5f8; color: #172033; }
       main { width: min(420px, calc(100% - 48px)); padding: 32px; background: white; border: 1px solid #e5e8ee; border-radius: 10px; }
-      button { border: 0; border-radius: 6px; background: #172033; color: white; font: inherit; font-weight: 700; padding: 12px 18px; cursor: pointer; }
+      button { border: 0; border-radius: 6px; background: #f15a37; color: white; font: inherit; font-weight: 700; padding: 12px 18px; cursor: pointer; }
       p { color: #4d5870; line-height: 1.5; }
     </style>
   </head>
   <body>
     <main>
-      <h1>Stop email digests?</h1>
-      <p>This page has not changed your subscription. Confirm below to stop future digest emails.</p>
-      <form method="post" action="/unsubscribe">
+      <h1>Confirm your digest</h1>
+      <p>Activate repository activity emails for this address.</p>
+      <form method="post" action="/confirm">
         <input type="hidden" name="token" value="{{token}}" />
-        <button type="submit">Unsubscribe</button>
+        <button type="submit">Confirm email digest</button>
       </form>
     </main>
   </body>

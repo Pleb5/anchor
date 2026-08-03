@@ -1,31 +1,28 @@
+import 'dotenv/config'
 import { appendFile } from 'node:fs/promises'
 
-const LOG_FILE = (process.env.ANCHOR_LOG_FILE || 'anchor-alerts.log').trim()
+const LOG_FILE = (process.env.ANCHOR_LOG_FILE || 'anchor-digest.log').trim()
 
-type AlertLogEntry = {
-  ts: string
+type StructuredLog = {
+  category: 'subscription' | 'delivery' | 'webhook' | 'server'
   status: string
-  eventId: string
-  address: string
-  pubkey: string
-  detail?: string
+  subscription?: string
+  eventId?: string
+  runId?: string
+  eventCount?: number
+  messageId?: string
+  errorType?: string
 }
 
-const formatLine = (entry: AlertLogEntry) => JSON.stringify(entry)
-
-const safeAppend = async (line: string) => {
+const safeAppend = async (entry: StructuredLog) => {
+  const line = JSON.stringify({ timestamp: new Date().toISOString(), ...entry })
   try {
     await appendFile(LOG_FILE, `${line}\n`)
   } catch (error) {
-    console.warn('Failed to write alert log', error)
+    console.warn('Unable to write structured service log', error instanceof Error ? error.name : 'Error')
   }
 }
 
-export const logAlertEvent = (entry: Omit<AlertLogEntry, 'ts'>) => {
-  void safeAppend(
-    formatLine({
-      ...entry,
-      ts: new Date().toISOString(),
-    })
-  )
+export const logStructured = (entry: StructuredLog) => {
+  void safeAppend(entry)
 }

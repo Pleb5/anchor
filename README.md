@@ -1,166 +1,149 @@
-A nostr notifier service.
+# Anchor Email Digest
 
-# Deploying Anchor
+Anchor is an authenticated Nostr relay and scheduler for Budabit repository email digests. It accepts one encrypted digest subscription per user, collects configured Git activity only from user-declared relays, and sends grouped email through Postmark.
+
+Legacy alert tag arrays, push registrations, and per-alert cron jobs are not supported.
+
+## Protocol
+
+Subscriptions are replaceable kind `32830` events. Their only outer tags must be:
+
+```json
+[
+  ["d", "budabit/email-digest"],
+  ["p", "<Anchor pubkey>"]
+]
+```
+
+The NIP-44 encrypted content must be a JSON object:
+
+```json
+{
+  "version": 1,
+  "channel": "email-digest",
+  "email": "person@example.com",
+  "manageUrl": "https://budabit.example/settings/notifications",
+  "locale": "en-US",
+  "cadence": {
+    "intervalDays": 2,
+    "localTime": "09:00",
+    "timezone": "America/New_York"
+  },
+  "handler": {
+    "address": "31990:<pubkey>:<id>",
+    "relay": "wss://handler.example"
+  },
+  "repositories": [
+    {
+      "address": "30617:<pubkey>:<id>",
+      "name": "Repository name",
+      "relays": ["wss://relay.example"],
+      "options": {
+        "issues": { "new": true, "comments": true },
+        "prs": { "new": true, "comments": true, "updates": true },
+        "status": { "open": true, "draft": true, "applied": true, "closed": true },
+        "assignments": true
+      }
+    }
+  ]
+}
+```
+
+`manageUrl` is required and must be an absolute HTTPS URL without credentials or a fragment. It is used for the email settings link and its origin supplies the safe item-link fallback `/git/<repo_naddr>/<section>/<id>` when NIP-89 handler metadata is unavailable.
+
+Status is returned as encrypted JSON in kind `32831`. Events older than 24 hours or more than five minutes in the future are rejected. Payloads are limited to 64 KiB, repositories to 50, repository relays to three each, and unique repository relays to 20. The NIP-89 handler relay does not count toward the repository-relay limit.
+
+A same-email replacement remains confirmed and retains its next run when cadence is unchanged. A replacement with a different email pauses delivery and stores the new configuration as pending until that address is confirmed. Confirmation and unsubscribe links render a confirmation page on GET and mutate only on POST.
+
+## Scheduling
+
+Cadence is based on local calendar days and the configured IANA timezone, including DST transitions. `next_run_at` and each half-open `[period_start, period_end)` are persisted in SQLite. The scheduler polls all due subscriptions, runs at most three concurrently, consolidates missed boundaries into one digest, advances empty periods without sending, and makes up to three retries after the initial attempt.
+
+Each configured repository must receive a genuine EOSE from at least one declared relay for primary activity and any required root-context query. Incomplete coverage fails the run so the same period is retried. Primary collection is intentionally capped at 500 unique events per digest window as a service-protection limit; activity beyond that cap is not paginated in the current version.
+
+SQLite uses WAL mode and a five-second busy timeout. The current schema is created with `CREATE TABLE IF NOT EXISTS` for a fresh database; legacy `alerts` data is ignored.
+
+Run identities and atomic claims prevent concurrent duplicate processing. Exactly-once email delivery cannot be guaranteed across the external Postmark boundary: a process crash after Postmark accepts a message but before its `MessageID` is persisted can cause that run to be retried.
 
 ## Configuration
 
-Anchor includes several environment variables which need to be either added to the environment or placed in a `.env` file:
+Copy `.env.template` to `.env` and set:
 
-- `ANCHOR_SECRET` - a nostr private key used to sign messages and decrypt messages
-- `ANCHOR_NAME` - the name of the Anchor instance
-- `ANCHOR_URL` - the URL of the Anchor instance
-- `INDEXER_RELAYS` - a comma-separated list of relays to use for retrieving `kind 10002` events
-- `DEFAULT_RELAYS` - a comma-separated list of relays to use as fallbacks
-- `SEARCH_RELAYS` - a comma-separated list of relays to use for searching nostr
-- `POSTMARK_API_KEY` - a postmarkapp.com API key
-- `POSTMARK_SENDER_ADDRESS` - a postmarkapp.com sender email
-- `FCM_KEY` - a Firebase Cloud Messaging API key
-- `APN_KEY` - an Apple Push Notifications key
-- `APN_KEY_ID` - an Apple Push Notifications key ID
-- `APN_TEAM_ID` - an Apple Push Notifications team ID
-- `APN_PRODUCTION` - whether to use production APN notifications (`true` for production, otherwise sandbox will be used)
-- `VAPID_PRIVATE_KEY` - a VAPID private key
-- `VAPID_PUBLIC_KEY` - a VAPID public key corresponding to the private key
-- `VAPID_SUBJECT` - a URL for the VAPID subject
-- `PORT` - The port to run the web server and relay on
+- `ANCHOR_SECRET`: Nostr private key used for NIP-44 and status signatures.
+- `ANCHOR_NAME`: public service name.
+- `ANCHOR_URL`: externally visible HTTP(S) URL. NIP-42 matching derives the exact WS(S) URL from it.
+- `ANCHOR_DB_PATH`: SQLite path, default `anchor.db`.
+- `ANCHOR_LOG_FILE`: structured delivery log path.
+- `POSTMARK_API_KEY`: Postmark server token.
+- `POSTMARK_SENDER_ADDRESS`: verified sender address.
+- `POSTMARK_MESSAGE_STREAM`: explicit Postmark stream, default `outbound`.
+- `POSTMARK_WEBHOOK_USERNAME`: HTTP Basic webhook username, default `anchor`.
+- `POSTMARK_WEBHOOK_SECRET`: HTTP Basic webhook password and shared Bearer/header secret.
+- `HOST`: listen address, default `127.0.0.1`.
+- `PORT`: listen port, default `4738`.
+- `SCHEDULER_POLL_MS`: due-work polling interval, default `30000`.
 
-## Installation
+Configure Postmark bounce and spam complaint webhooks with the HTTPS endpoint `https://<anchor-host>/webhooks/postmark`. In Postmark, set HTTP Basic authentication to `POSTMARK_WEBHOOK_USERNAME` and `POSTMARK_WEBHOOK_SECRET` through the dashboard or deployment secret manager; do not place credentials in checked-in URLs or command examples. Bearer authentication and `X-Anchor-Webhook-Secret` remain supported. Spam complaints and bounces marked `Inactive: true` suppress matching active subscriptions; soft bounces are acknowledged without suppression. Delivery metadata includes `run_id`, `subscription_pubkey`, and `period_end`.
 
-There will be some parts of the following templates, for example `<SERVER NAME>`, which you'll need to fill in before running the code. This guide will walk you through creating a user, installing dependencies, and building anchor.
+## Build And Test
 
 ```sh
-# Replace with your password
-PASSWORD=<YOUR PASSWORD HERE>
-
-# Add the user and set a password
-adduser anchor
-echo anchor:$PASSWORD | chpasswd
-
-# Login as anchor
-sudo su anchor
-
-# Go to anchor's home directory
-cd ~
-
-# Install nvm, yarn, clone repos
-wget -qO- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-
-# Update PATH
-. ~/.bashrc
-
-# Clone repository and install dependencies
-git clone https://github.com/coracle-social/anchor.git
-cd ~/anchor
-nvm install
-nvm use
-
-# Copy and fill in env variables - this step is required!
-cp .env.template .env
-cp web/.env.template web/.env
-
-# Next, install dependencies and build the service. We have a script that does this since the
-# web front end is its own package. We also modify the package.json files to remove pnpm overrides
-# which are used to link dependencies in development.
-./build-in-production.sh
+pnpm install
+pnpm run check
+pnpm test
+pnpm run build
 ```
 
-You can now run anchor using `pnpm run start`.
+`pnpm run build:server` compiles the service and email/page templates without requiring `web/node_modules`.
 
-## System Service
+Run the built service with:
 
-Create a systemd file as `/etc/systemd/system/anchor.service` and fill in the variables:
+```sh
+pnpm start
+```
 
-```conf
+Operational endpoints:
+
+- `GET /health`: process liveness.
+- `GET /ready`: verifies SQLite and scheduler readiness.
+- `GET /` with `Accept: application/nostr+json`: NIP-11 metadata.
+
+## Systemd
+
+```ini
 [Unit]
-Description={DESCRIPTION}
-ConditionPathExists={REPOSITORY_PATH}
-After=network.target
+Description=Anchor Budabit email digest
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User={USERNAME}
-Group={USERNAME}
-WorkingDirectory={REPOSITORY_PATH}
-ExecStart={FULL_PATH_TO_NODE} {REPOSITORY_PATH}/dist/index.js
-Restart=always
-RuntimeMaxSec=3600
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=anchor
+User=anchor
+Group=anchor
+WorkingDirectory=/srv/anchor
+EnvironmentFile=/srv/anchor/.env
+ExecStart=/usr/bin/node /srv/anchor/dist/index.js
+Restart=on-failure
+KillSignal=SIGTERM
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Start the service:
+The process handles `SIGTERM` and `SIGINT` by stopping new HTTP work, closing relay connections, draining websocket handlers with a bounded timeout, stopping the scheduler, closing collector sockets, and closing SQLite. A final process-level timeout prevents shutdown from hanging indefinitely.
 
-```sh
-service anchor start
-```
+## Reverse Proxy
 
-## Nginx/TLS (optional)
+Anchor trusts exactly one proxy hop. Preserve the public host and forwarding headers:
 
-If you'd like to set up anchor on a server you control, you'll want to set up a reverse proxy and provision a TSL certificate for the domain you'll be using. You should also make sure to add swap to your server.
-
-First, create an `A` record with your DNS provider pointing to the IP of your server. This will allow certbot to create your certificate later.
-
-Next install `nginx`, `git`, and `certbot`. If you're on a debian- or ubuntu-based distro, run `sudo apt-get update && sudo apt-get install nginx git certbot python3-certbot-nginx`.
-
-Place the following in a file named after your domain in the `/etc/nginx/sites-available` directory, for example, `anchor.example.com`. This should match the `A` record you registered above.
-
-```conf
-server {
-    listen              80;
-    server_name         <SERVER NAME>;
-
-    location / {
-        proxy_pass http://127.0.0.1:<PORT>;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
-        proxy_set_header Host $host;
-    }
-
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:4738;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
 }
-```
-
-Now, enable the site, run certbot, and restart nginx. If you want to be careful, run `nginx -t` before restarting nginx.
-
-```sh
-ln -s /etc/nginx/sites-{available,enabled}/<SERVER NAME>
-certbot --nginx -d <SERVER NAME>
-service nginx restart
-```
-
-Now, visit your domain. You should be all set up!
-
-# Usage
-
-```sh
-# Fill in the instance's pubkey and url
-pubkey=27b7c2ed89ef78322114225ea3ebf5f72c7767c2528d4d0c1854d039c00085df
-relay=localhost:4738
-
-# Configure our alert
-tags=$(cat <<EOF
-[
-  ["channel","email"],
-  ["cron","0 0 15 * * 2"],
-  ["relay","relay.nostrtalk.org"],
-  ["filter","{\"kinds\":[11]}"]
-]
-EOF
-)
-
-# Encrypt it
-alert_ciphertext="$(nak encrypt -p $pubkey $tags)"
-
-# Publish our alert to the relay
-nak event -k 32830 -p $pubkey -t d=my-alert -c $alert_ciphertext $relay
-
-# Request status for all our alerts and decrypt the content
-status_ciphertext=$(nak req -k 32831 --auth $relay | jq -r '.content')
-status=$(nak decrypt -p $pubkey $status_ciphertext)
-
-echo $status
 ```

@@ -1,72 +1,117 @@
 <mjml>
   <mj-head>
-    <mj-title>New Activity</mj-title>
+    <mj-title>Budabit repository digest</mj-title>
+    <mj-preview>{{preheader}}</mj-preview>
+    <mj-attributes>
+      <mj-all font-family="Inter, Arial, sans-serif" />
+      <mj-text color="#243047" font-size="14px" line-height="22px" />
+      <mj-button background-color="#f15a37" color="#ffffff" border-radius="6px" font-weight="700" />
+    </mj-attributes>
     <mj-style inline="inline">
-      .header { font-size: 24px; font-weight: bold; }
-      .subheader { font-size: 16px; color: #555; }
-      .event-item { margin-bottom: 20px; border-left: 3px solid #F45E43; padding-left: 10px; }
-      .event-meta { margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
-      .event-meta-left { display: flex; align-items: center; }
-      .event-author { font-weight: bold; margin-right: 4px; }
-      .event-type { font-size: 12px; color: #555; background: #f5f5f5; padding: 2px 6px; border-radius: 999px; margin: 0 6px; }
-      .event-content { white-space: pre-wrap; }
-      .event-timestamp { color: #777; font-size: 12px; }
-      .event-link { font-size: 12px; }
-      .section-header { font-size: 18px; font-weight: bold; margin-top: 15px; }
-      .profile-image { width: 20px; height: 20px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
-      .event-stats { margin-top: 8px; color: #666; font-size: 14px; }
-      .stat-item { display: inline-flex; align-items: center; margin-right: 12px; }
-      .stat-icon { width: 16px; height: 16px; margin-right: 4px; vertical-align: middle; }
-      a { text-decoration: none; }
+      .eyebrow { color: #f15a37; font-size: 11px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase; }
+      .stat { color: #ffffff; font-size: 24px; font-weight: 800; line-height: 28px; }
+      .stat-label { color: #b7c0d2; font-size: 11px; letter-spacing: .5px; text-transform: uppercase; }
+      .card { border: 1px solid #e5e8ee; border-radius: 8px; }
+      .row { border-top: 1px solid #edf0f4; padding: 14px 0 4px; }
+      .row-title { color: #172033; font-size: 15px; font-weight: 700; }
+      .row-meta { color: #697386; font-size: 12px; }
+      .summary { color: #4d5870; font-size: 13px; }
+      .link { color: #d94828; font-weight: 700; text-decoration: none; }
+      .attention { border-left: 4px solid #f15a37; }
+      @media only screen and (max-width: 480px) {
+        .mobile-center div { text-align: center !important; }
+      }
     </mj-style>
   </mj-head>
-  <mj-body>
-    <mj-section background-color="#f0f0f0" padding="20px">
+  <mj-body width="600px" background-color="#f3f5f8">
+    <mj-section background-color="#172033" padding="24px 28px 18px">
       <mj-column>
-        <mj-text css-class="header">Hello {{name}},</mj-text>
-        <mj-text css-class="subheader">
-          Below is a summary of activity over the last {{Duration}}.
-          We found {{Total}} new updates from {{TopProfiles}}.
-        </mj-text>
-        <mj-divider border-color="#cccccc" />
+        <mj-text color="#ffffff" font-size="21px" font-weight="800" padding="0">BUDABIT</mj-text>
+        <mj-text color="#b7c0d2" font-size="12px" padding="6px 0 0">Repository activity, without the noise</mj-text>
+      </mj-column>
+    </mj-section>
 
-        {{#HasPopular}}
-        <mj-text css-class="section-header">Most Popular</mj-text>
-        {{#Popular}}
-        <mj-text>
-          <div class="event-item">
-            <div class="event-meta">
-              <div class="event-meta-left">
-                {{#Icon}}<img src="{{Icon}}" class="profile-image" />{{/Icon}}
-                <span class="event-author">{{Name}}</span>
-                <span class="event-type">{{Type}}</span>
-                <span class="event-timestamp">at {{Timestamp}}</span>
-              </div>
-              <div class="event-link">
-                <a href="{{Link}}">View post</a>
-              </div>
-            </div>
-            <div class="event-content">{{{Content}}}</div>
-            <div class="event-stats">
-              <span class="stat-item">
-                <img class="stat-icon" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAAASFBMVEUAAAAiIkQdJ04bJkwbKU0dJkscKEwbJ00cKEsdJkwcJ0wbKEscJkwcJ0scJ00bJ00dJk0bJ0wcJkwcKE0cJ0wcJ0wcJ0z///8ZxKH0AAAAF3RSTlMADxovOD1AQlJXW19ld4iWoKizwenq9eQPMKMAAAABYktHRBcL1piPAAAAOElEQVQY02NgoBZg40fls4qw4+WziAnxggA3I1xAmA8EBEU5YEaKsoFpZlEmNBEBHjRruTip4wsADUgCEGuuAxQAAAAASUVORK5CYII=" />
-                {{Replies}}
-              </span>
-            </div>
+    <mj-section background-color="#ffffff" padding="30px 28px 20px">
+      <mj-column>
+        <mj-text css-class="eyebrow" padding="0 0 8px">Your email digest</mj-text>
+        <mj-text color="#172033" font-size="28px" font-weight="800" line-height="34px" padding="0 0 8px">What changed</mj-text>
+        <mj-text color="#697386" padding="0">{{dateRange}}</mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#172033" padding="20px 28px">
+      <mj-column width="33.33%" css-class="mobile-center">
+        <mj-text align="center" css-class="stat" padding="0">{{total}}</mj-text>
+        <mj-text align="center" css-class="stat-label" padding="4px 0 0">Updates</mj-text>
+      </mj-column>
+      <mj-column width="33.33%" css-class="mobile-center">
+        <mj-text align="center" css-class="stat" padding="0">{{repositoryCount}}</mj-text>
+        <mj-text align="center" css-class="stat-label" padding="4px 0 0">Repositories</mj-text>
+      </mj-column>
+      <mj-column width="33.33%" css-class="mobile-center">
+        <mj-text align="center" css-class="stat" padding="0">{{attentionCount}}</mj-text>
+        <mj-text align="center" css-class="stat-label" padding="4px 0 0">Need you</mj-text>
+      </mj-column>
+    </mj-section>
+
+    {{#hasAttention}}
+    <mj-section background-color="#fff8f5" padding="26px 28px 10px">
+      <mj-column>
+        <mj-text color="#172033" font-size="20px" font-weight="800" padding="0 0 5px">Needs attention</mj-text>
+        <mj-text color="#697386" padding="0 0 14px">Items assigned directly to you.</mj-text>
+        {{#attention}}
+        <mj-text css-class="card attention" background-color="#ffffff" padding="16px 18px">
+          <div class="row-title">{{title}}</div>
+          <div class="row-meta">{{repositoryName}} &middot; {{timestamp}}</div>
+          <div class="summary">{{summary}}</div>
+          <div><a class="link" href="{{link}}">Open in Budabit &rarr;</a></div>
+        </mj-text>
+        {{/attention}}
+      </mj-column>
+    </mj-section>
+    {{/hasAttention}}
+
+    <mj-section background-color="#ffffff" padding="28px 28px 8px">
+      <mj-column>
+        <mj-text color="#172033" font-size="20px" font-weight="800" padding="0 0 16px">Repositories</mj-text>
+        {{#repositories}}
+        <mj-text css-class="card" padding="18px" container-background-color="#ffffff">
+          <div class="row-title" style="font-size:17px">{{name}}</div>
+          <div class="row-meta" style="padding-bottom:8px">{{countsText}}</div>
+          {{#rows}}
+          <div class="row">
+            <div class="row-title">{{title}}</div>
+            <div class="row-meta">{{author}} &middot; {{timestamp}}</div>
+            <div class="summary">{{summary}}</div>
+            <div><a class="link" href="{{link}}">Open in Budabit &rarr;</a></div>
           </div>
+          {{/rows}}
+          {{^hasRows}}
+          <div class="summary">Assigned items are listed above.</div>
+          {{/hasRows}}
         </mj-text>
-        {{/Popular}}
-        <mj-divider border-color="#cccccc" />
-        {{/HasPopular}}
+        <mj-spacer height="12px" />
+        {{/repositories}}
+        {{#hasOverflow}}
+        <mj-text align="center" color="#697386" font-size="12px">{{overflow}} additional grouped rows were omitted. Open Budabit to see the rest.</mj-text>
+        {{/hasOverflow}}
+      </mj-column>
+    </mj-section>
 
-        <mj-text>
-          You're receiving this email because you subscribed to notifications.
-          We'll continue to send you updates based on your subscription preferences.
+    <mj-section background-color="#ffffff" padding="14px 28px 30px">
+      <mj-column>
+        <mj-button href="{{manageUrl}}" padding="0">Manage digest settings</mj-button>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#e9edf3" padding="20px 28px">
+      <mj-column>
+        <mj-text align="center" color="#697386" font-size="11px" line-height="17px" padding="0">
+          Sent by {{anchorName}} because you confirmed a Budabit email digest.<br />
+          <a href="{{manageUrl}}" style="color:#4d5870">Manage settings</a>
+          &nbsp;&middot;&nbsp;
+          <a href="{{unsubscribeUrl}}" style="color:#4d5870">Unsubscribe</a>
         </mj-text>
-
-        <mj-button background-color="#F45E43" color="#ffffff" href="{{unsubscribeUrl}}">
-          Unsubscribe
-        </mj-button>
       </mj-column>
     </mj-section>
   </mj-body>

@@ -1,242 +1,228 @@
 import { WebSocket } from 'ws'
-import { Request } from 'express'
-import { decrypt } from '@welshman/signer'
-import { parseJson, gt, pluck, ago, MINUTE, randomId } from '@welshman/lib'
-import type { SignedEvent, Filter } from '@welshman/util'
+import { decrypt, type ISigner } from '@welshman/signer'
+import { randomId } from '@welshman/lib'
 import {
-  DELETE,
   CLIENT_AUTH,
-  getAddress,
+  DELETE,
   matchFilters,
   getTagValue,
-  getTagValues,
   verifyEvent,
+  type Filter,
+  type SignedEvent,
 } from '@welshman/util'
-import { appSigner } from './env.js'
-import { getAlertsForPubkey, getAlert } from './database.js'
-import { addAlert, processDelete } from './actions.js'
-import { alertKinds, createStatusEvent } from './alert.js'
-import { logAlertEvent } from './logger.js'
-
-type AuthState = {
-  challenge: string
-  event?: SignedEvent
-}
+import type { DigestDatabase } from './database.js'
+import { ActionError, SubscriptionService } from './actions.js'
+import {
+  DIGEST_SUBSCRIPTION_KIND,
+  MAX_EVENT_AGE_SECONDS,
+  MAX_EVENT_FUTURE_SECONDS,
+  parseDigestConfig,
+  validateSubscriptionEvent,
+  ValidationError,
+} from './subscription.js'
+import { logStructured } from './logger.js'
 
 type RelayMessage = [string, ...any[]]
 
-export class Connection {
-  private _socket: WebSocket
-  private _request: Request
-  private _subs = new Map<string, Filter[]>()
+const currentSeconds = () => Math.floor(Date.now() / 1000)
 
-  auth: AuthState = {
-    challenge: randomId(),
-    event: undefined,
+export const normalizeNip42RelayUrl = (value: string) => {
+  const url = new URL(value)
+  if (url.protocol === 'http:') url.protocol = 'ws:'
+  if (url.protocol === 'https:') url.protocol = 'wss:'
+  if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.hash) {
+    throw new Error('Invalid relay URL')
   }
+  return url.toString()
+}
 
-  constructor(socket: WebSocket, request: Request) {
-    this._socket = socket
-    this._request = request
+export class Connection {
+  private readonly subscriptions = new Map<string, Filter[]>()
+  private cleaned = false
+  private auth: { challenge: string; event?: SignedEvent } = { challenge: randomId() }
+
+  constructor(
+    private readonly socket: WebSocket,
+    private readonly database: DigestDatabase,
+    private readonly service: SubscriptionService,
+    private readonly signer: ISigner,
+    private readonly expectedRelayUrl: string
+  ) {
     this.send(['AUTH', this.auth.challenge])
   }
 
   cleanup() {
-    this._subs.clear()
-    this._socket.removeAllListeners('message')
-    this._socket.removeAllListeners('error')
-    this._socket.removeAllListeners('close')
-    this._socket.close()
+    if (this.cleaned) return
+    this.cleaned = true
+    this.subscriptions.clear()
   }
 
-  send(message: RelayMessage) {
-    this._socket.send(JSON.stringify(message))
+  close() {
+    this.cleanup()
+    if (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING) {
+      this.socket.close(1001, 'server shutdown')
+    }
   }
 
-  handle(message: WebSocket.Data) {
-    let parsedMessage: RelayMessage
+  terminate() {
+    this.cleanup()
+    this.socket.terminate()
+  }
+
+  private send(message: RelayMessage) {
+    if (this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(message))
+    }
+  }
+
+  async handle(message: WebSocket.Data) {
+    let parsed: unknown
     try {
-      parsedMessage = JSON.parse(message.toString())
-    } catch (e) {
-      this.send(['NOTICE', '', 'Unable to parse message'])
+      parsed = JSON.parse(message.toString())
+    } catch {
+      this.send(['NOTICE', 'Unable to parse message'])
+      return
+    }
+    if (!Array.isArray(parsed) || typeof parsed[0] !== 'string') {
+      this.send(['NOTICE', 'Unable to read message'])
       return
     }
 
-    let verb: string
-    let payload: any[]
-    try {
-      ;[verb, ...payload] = parsedMessage
-    } catch (e) {
-      this.send(['NOTICE', '', 'Unable to read message'])
+    const [verb, ...payload] = parsed as RelayMessage
+    const handler = this[`on${verb}` as keyof Connection]
+    if (typeof handler !== 'function' || !['onAUTH', 'onREQ', 'onCLOSE', 'onEVENT'].includes(`on${verb}`)) {
+      this.send(['NOTICE', `Unable to handle ${verb} message`])
       return
     }
-
-    const handler = this[`on${verb}` as keyof Connection] as
-      | ((...args: any[]) => Promise<void>)
-      | undefined
-
-    if (handler) {
-      handler.call(this, ...payload)
-    } else {
-      this.send(['NOTICE', '', `Unable to handle ${verb} message`])
-    }
+    await (handler as (...args: any[]) => Promise<void>).call(this, ...payload)
   }
 
-  async onAUTH(event: SignedEvent) {
-    if (!verifyEvent(event)) {
-      return this.send(['OK', event.id, false, 'invalid signature'])
+  private async onAUTH(event: SignedEvent) {
+    if (!event || !verifyEvent(event)) {
+      this.send(['OK', event?.id || '', false, 'invalid signature'])
+      return
     }
-
     if (event.kind !== CLIENT_AUTH) {
-      return this.send(['OK', event.id, false, 'invalid kind'])
+      this.send(['OK', event.id, false, 'invalid kind'])
+      return
     }
-
-    if (event.created_at < ago(5, MINUTE)) {
-      return this.send(['OK', event.id, false, 'created_at is too far from current time'])
+    const now = currentSeconds()
+    if (event.created_at < now - 5 * 60 || event.created_at > now + 5 * 60) {
+      this.send(['OK', event.id, false, 'created_at is too far from current time'])
+      return
     }
-
     if (getTagValue('challenge', event.tags) !== this.auth.challenge) {
-      return this.send(['OK', event.id, false, 'invalid challenge'])
+      this.send(['OK', event.id, false, 'invalid challenge'])
+      return
     }
 
-    if (!getTagValue('relay', event.tags)?.includes(this._request.get('host') || '')) {
-      return this.send(['OK', event.id, false, 'invalid relay'])
+    let relay: string
+    try {
+      relay = normalizeNip42RelayUrl(getTagValue('relay', event.tags) || '')
+    } catch {
+      this.send(['OK', event.id, false, 'invalid relay'])
+      return
     }
-
+    if (relay !== this.expectedRelayUrl) {
+      this.send(['OK', event.id, false, 'invalid relay'])
+      return
+    }
     this.auth.event = event
-
     this.send(['OK', event.id, true, ''])
   }
 
-  async onREQ(id: string, ...filters: Filter[]) {
+  private async onREQ(id: string, ...filters: Filter[]) {
     if (!this.auth.event) {
-      return this.send(['CLOSED', id, `auth-required: alerts are protected`])
+      this.send(['CLOSED', id, 'auth-required: subscriptions are protected'])
+      return
     }
-
-    this._subs.set(id, filters)
-
-    const userPubkey = this.auth.event.pubkey
-    const alerts = await getAlertsForPubkey(userPubkey)
-    const activeAlerts = alerts.filter((alert) => !alert.deleted_at)
-    const alertEvents = pluck<SignedEvent>('event', activeAlerts)
-    const statusEvents = await Promise.all(activeAlerts.map(createStatusEvent))
-
-    for (const event of [...alertEvents, ...statusEvents]) {
-      if (matchFilters(filters, event)) {
-        this.send(['EVENT', id, event])
+    if (typeof id !== 'string' || !filters.length || filters.some((filter) => !filter || typeof filter !== 'object')) {
+      this.send(['CLOSED', typeof id === 'string' ? id : '', 'invalid: malformed request'])
+      return
+    }
+    this.subscriptions.set(id, filters)
+    const subscriptions = await this.database.getSubscriptionsForPubkey(this.auth.event.pubkey)
+    for (const subscription of subscriptions) {
+      const events = [
+        ...(subscription.state === 'deleted' ? [] : [subscription.event]),
+        await this.service.createStatusEvent(subscription),
+      ]
+      for (const event of events) {
+        if (matchFilters(filters, event)) this.send(['EVENT', id, event])
       }
     }
-
     this.send(['EOSE', id])
   }
 
-  async onCLOSE(id: string) {
-    this._subs.delete(id)
+  private async onCLOSE(id: string) {
+    if (typeof id === 'string') this.subscriptions.delete(id)
   }
 
-  async onEVENT(event: SignedEvent) {
-    if (!verifyEvent(event)) {
-      return this.send(['OK', event.id, false, 'Invalid signature'])
+  private async onEVENT(event: SignedEvent) {
+    if (!event || !verifyEvent(event)) {
+      this.send(['OK', event?.id || '', false, 'invalid signature'])
+      return
     }
-
-    if (event.pubkey !== this.auth.event?.pubkey) {
-      return this.send(['OK', event.id, false, 'Event not authorized'])
-    }
-
-    try {
-      if (event.kind === DELETE) {
-        await this.handleDelete(event)
-      } else if (alertKinds.includes(event.kind)) {
-        await this.handleAlertRequest(event)
-      } else {
-        this.send(['OK', event.id, false, 'Event kind not accepted'])
-      }
-    } catch (e) {
-      this.send(['OK', event.id, false, 'Unknown error'])
-      throw e
-    }
-  }
-
-  private async handleDelete(event: SignedEvent) {
-    await processDelete({ event })
-
-    this.send(['OK', event.id, true, ''])
-  }
-
-  private async handleAlertRequest(event: SignedEvent) {
-    const pubkey = await appSigner.getPubkey()
-    const address = getAddress(event)
-
-    logAlertEvent({
-      status: 'received',
-      eventId: event.id,
-      address,
-      pubkey: event.pubkey,
-    })
-
-    if (!getTagValues('p', event.tags).includes(pubkey)) {
-      return this.send(['OK', event.id, false, 'Event must p-tag this relay'])
-    }
-
-    const duplicate = await getAlert(address)
-
-    if (duplicate?.event?.id === event.id) {
-      logAlertEvent({
-        status: 'duplicate',
-        eventId: event.id,
-        address,
-        pubkey: event.pubkey,
-      })
-      this.send(['OK', event.id, true, ''])
+    if (!this.auth.event || event.pubkey !== this.auth.event.pubkey) {
+      this.send(['OK', event.id, false, 'event not authorized'])
       return
     }
 
-    if (gt(duplicate?.deleted_at, event.created_at)) {
-      return this.send(['OK', event.id, false, 'Alert has been deleted'])
+    try {
+      if (event.kind === DIGEST_SUBSCRIPTION_KIND) {
+        await this.handleSubscription(event)
+      } else if (event.kind === DELETE) {
+        const now = currentSeconds()
+        if (
+          event.created_at < now - MAX_EVENT_AGE_SECONDS ||
+          event.created_at > now + MAX_EVENT_FUTURE_SECONDS
+        ) {
+          throw new ValidationError('event created_at is too far from current time')
+        }
+        await this.service.delete(event)
+        this.send(['OK', event.id, true, ''])
+      } else {
+        this.send(['OK', event.id, false, 'event kind not accepted'])
+      }
+    } catch (error) {
+      const known = error instanceof ValidationError || error instanceof ActionError
+      this.send(['OK', event.id, false, known ? error.message : 'internal error'])
+      logStructured({
+        category: 'subscription',
+        status: 'rejected',
+        subscription: event.pubkey,
+        eventId: event.id,
+        errorType: error instanceof Error ? error.name : 'Error',
+      })
+    }
+  }
+
+  private async handleSubscription(event: SignedEvent) {
+    const anchorPubkey = await this.signer.getPubkey()
+    validateSubscriptionEvent(event, anchorPubkey)
+    const existing = await this.database.getSubscription(event.pubkey)
+    if (existing?.eventId === event.id) {
+      this.send(['OK', event.id, true, 'duplicate: already accepted'])
+      return
+    }
+    if (existing && event.created_at <= existing.eventCreatedAt) {
+      throw new ActionError('A newer subscription event already exists')
     }
 
     let plaintext: string
     try {
-      plaintext = await decrypt(appSigner, event.pubkey, event.content)
-    } catch (e) {
-      logAlertEvent({
-        status: 'decrypt_failed',
-        eventId: event.id,
-        address,
-        pubkey: event.pubkey,
-        detail: String(e),
-      })
-      return this.send(['OK', event.id, false, 'Failed to decrypt event content'])
+      plaintext = await decrypt(this.signer, event.pubkey, event.content)
+    } catch {
+      throw new ValidationError('failed to decrypt event content')
     }
-
-    const tags = parseJson(plaintext)
-
-    if (!Array.isArray(tags)) {
-      logAlertEvent({
-        status: 'invalid_tags',
-        eventId: event.id,
-        address,
-        pubkey: event.pubkey,
-      })
-      return this.send(['OK', event.id, false, 'Encrypted tags are not an array'])
-    }
-
-    const alert = await addAlert({ event, tags })
-
-    logAlertEvent({
-      status: 'accepted',
-      eventId: event.id,
-      address,
-      pubkey: event.pubkey,
-    })
-
+    const config = parseDigestConfig(plaintext)
+    const subscription = await this.service.add(event, config)
     this.send(['OK', event.id, true, ''])
 
-    for (const [id, filters] of this._subs) {
-      for (const event of [alert.event, await createStatusEvent(alert)]) {
-        if (matchFilters(filters, event)) {
-          this.send(['EVENT', id, event])
-        }
+    const events = [subscription.event, await this.service.createStatusEvent(subscription)]
+    for (const [id, filters] of this.subscriptions) {
+      for (const accepted of events) {
+        if (matchFilters(filters, accepted)) this.send(['EVENT', id, accepted])
       }
     }
   }
