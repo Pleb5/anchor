@@ -272,8 +272,6 @@ export function createServer(dependencies: ServerDependencies) {
     socket.once('close', finalize)
   })
 
-  app.use(express.static('web/dist'))
-
   app.use((error: Error, _request: Request, response: Response, next: NextFunction) => {
     if (!error) return next()
     if (error instanceof ActionError) {

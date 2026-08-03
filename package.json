@@ -3,9 +3,8 @@
   "type": "module",
   "version": "1.0.0",
   "scripts": {
-    "build": "tsc && pnpm run build:html && pnpm run build:web",
+    "build": "pnpm run build:server",
     "build:server": "tsc && pnpm run build:html",
-    "build:web": "cd web && pnpm run build",
     "build:html": "cp -r src/pages dist/ && cp -r src/emails dist/",
     "check": "tsc --noEmit && eslint src",
     "format": "prettier --write \"src/**/*.{ts,js,json,html}\"",
