@@ -1,4 +1,5 @@
 import { ServerClient } from 'postmark'
+import { createHash } from 'node:crypto'
 import type { Message } from 'postmark'
 import type { DigestData, DigestRepositoryData, DigestRow } from './digest.js'
 import type { DigestRun, Subscription } from './database.js'
@@ -66,6 +67,12 @@ const countsText = (repository: DigestRepositoryData) => {
   return values.join(' / ')
 }
 
+const postmarkRunId = (runId: string) => {
+  if (runId.length <= 80) return runId
+  const suffix = runId.slice(runId.lastIndexOf(':') + 1)
+  return suffix.length <= 80 ? suffix : createHash('sha256').update(runId).digest('hex')
+}
+
 const rowView = (row: DigestRow, locale: string | undefined, timezone: string) => ({
   ...row,
   timestamp: formatTimestamp(row.createdAt, locale, timezone),
@@ -114,7 +121,8 @@ export function buildPostmarkDigestMessage(input: DigestMessageInput): Message {
     MessageStream: input.stream,
     Tag: 'email-digest',
     Metadata: {
-      run_id: input.runId,
+      // Postmark limits metadata values to 80 characters; durable run IDs include a 64-char event prefix.
+      run_id: postmarkRunId(input.runId),
       subscription_pubkey: input.subscriptionPubkey,
       period_end: String(input.periodEnd),
     },

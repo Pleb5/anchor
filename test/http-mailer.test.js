@@ -178,6 +178,25 @@ test('Postmark digest payload includes stream, run metadata, text, and unsubscri
   )
 })
 
+test('Postmark digest metadata keeps durable run identifiers within provider limits', () => {
+  const uuid = '11111111-2222-4333-8444-555555555555'
+  const message = buildPostmarkDigestMessage({
+    to: 'person@example.com',
+    sender: 'Budabit <digest@example.com>',
+    stream: 'outbound',
+    subscriptionPubkey: 'a'.repeat(64),
+    runId: `${'b'.repeat(64)}:${uuid}`,
+    periodEnd: 1234,
+    subject: '[Budabit] Digest',
+    html: '<p>Digest</p>',
+    text: 'Digest',
+    unsubscribeUrl: 'https://anchor.example/unsubscribe?token=secret',
+  })
+
+  assert.equal(message.Metadata.run_id, uuid)
+  assert.ok(message.Metadata.run_id.length <= 80)
+})
+
 test('EmailService compiles responsive MJML and sends matching HTML and text bodies', async () => {
   let sent
   const client = {
