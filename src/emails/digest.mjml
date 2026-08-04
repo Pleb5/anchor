@@ -41,16 +41,16 @@
 
     <mj-section background-color="#172033" padding="20px 28px">
       <mj-column width="33.33%" css-class="mobile-center">
-        <mj-text align="center" css-class="stat" padding="0">{{total}}</mj-text>
-        <mj-text align="center" css-class="stat-label" padding="4px 0 0">Updates</mj-text>
+        <mj-text align="center" color="#ffffff" css-class="stat" padding="0">{{total}}</mj-text>
+        <mj-text align="center" color="#b7c0d2" css-class="stat-label" padding="4px 0 0">Updates</mj-text>
       </mj-column>
       <mj-column width="33.33%" css-class="mobile-center">
-        <mj-text align="center" css-class="stat" padding="0">{{repositoryCount}}</mj-text>
-        <mj-text align="center" css-class="stat-label" padding="4px 0 0">Repositories</mj-text>
+        <mj-text align="center" color="#ffffff" css-class="stat" padding="0">{{repositoryCount}}</mj-text>
+        <mj-text align="center" color="#b7c0d2" css-class="stat-label" padding="4px 0 0">Repositories</mj-text>
       </mj-column>
       <mj-column width="33.33%" css-class="mobile-center">
-        <mj-text align="center" css-class="stat" padding="0">{{attentionCount}}</mj-text>
-        <mj-text align="center" css-class="stat-label" padding="4px 0 0">Need you</mj-text>
+        <mj-text align="center" color="#ffffff" css-class="stat" padding="0">{{attentionCount}}</mj-text>
+        <mj-text align="center" color="#b7c0d2" css-class="stat-label" padding="4px 0 0">Need you</mj-text>
       </mj-column>
     </mj-section>
 

@@ -107,6 +107,50 @@ test('digest grouping deduplicates, applies options, recognizes only assignments
   assert.equal(digest.repositories[0].rows[0].title, 'Second issue')
 })
 
+test('issue activity compacts comments and statuses under one root row without losing counts', () => {
+  const issue = nostrEvent(GIT_ISSUE, '9', 110, [['a', REPO_ADDRESS]], 'Compact issue')
+  const comments = ['a', 'b', 'c'].map((seed, index) =>
+    nostrEvent(
+      GIT_COMMENT,
+      seed,
+      111 + index,
+      [
+        ['a', REPO_ADDRESS],
+        ['E', issue.id],
+      ],
+      `Comment ${index + 1}`
+    )
+  )
+  const status = nostrEvent(GIT_STATUS_OPEN, 'd', 114, [
+    ['a', REPO_ADDRESS],
+    ['E', issue.id],
+  ])
+  const digest = normalizeDigest(
+    config(),
+    PUBKEY,
+    [issue, ...comments, status].map((event) => ({ repositoryAddress: REPO_ADDRESS, event })),
+    [issue],
+    new Map(),
+    'https://budabit.example/<repo_naddr>/<section>/<id>',
+    100,
+    200
+  )
+
+  assert.equal(digest.eventCount, 5)
+  assert.deepEqual(digest.repositories[0].counts, {
+    newItems: 1,
+    comments: 3,
+    updates: 0,
+    statuses: 1,
+    assignments: 0,
+    total: 5,
+  })
+  assert.equal(digest.repositories[0].rows.length, 1)
+  assert.equal(digest.repositories[0].rows[0].title, 'Compact issue')
+  assert.equal(digest.repositories[0].rows[0].summary, 'New issue | 3 comments | Status: Open')
+  assert.equal(digest.repositories[0].rows[0].eventCount, 5)
+})
+
 test('digest rendering caps grouped rows at 50 and reports overflow', () => {
   const events = Array.from({ length: 60 }, (_, index) => ({
     repositoryAddress: REPO_ADDRESS,

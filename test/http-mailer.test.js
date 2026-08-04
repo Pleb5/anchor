@@ -267,6 +267,8 @@ test('EmailService compiles responsive MJML and sends matching HTML and text bod
   assert.match(sent.HtmlBody, /Needs attention/)
   assert.match(sent.HtmlBody, /Open in Budabit/)
   assert.match(sent.HtmlBody, /budabit\.example&#x2F;settings&#x2F;notifications/)
+  assert.match(sent.HtmlBody, /<div[^>]*color:#ffffff[^>]*>1<\/div>/)
+  assert.match(sent.HtmlBody, /<div[^>]*color:#b7c0d2[^>]*>Updates<\/div>/)
   assert.match(sent.TextBody, /NEEDS ATTENTION/)
   assert.match(sent.TextBody, /Manage settings: https:\/\/budabit\.example\/settings\/notifications/)
   assert.equal(sent.MessageStream, 'digests')

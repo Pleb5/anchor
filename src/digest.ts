@@ -257,17 +257,20 @@ export function normalizeDigest(
     if (!selection) continue
 
     const groupId = root?.id || event.id
+    const rowRoot =
+      root || (event.kind === GIT_ISSUE || event.kind === GIT_PULL_REQUEST ? event : undefined)
     const key = `${repository.address}:${groupId}`
     const row = grouped.get(key) || {
       key,
       repository,
-      root,
+      root: rowRoot,
       events: [],
       comments: 0,
       changes: new Set<string>(),
       statuses: new Set<string>(),
       attention: false,
     }
+    if (!row.root && rowRoot) row.root = rowRoot
     row.events.push(event)
     if (selection === 'Comment') row.comments++
     else if (selection === 'Status') row.statuses.add(STATUS_NAMES.get(event.kind)!)
