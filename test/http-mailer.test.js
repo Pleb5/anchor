@@ -61,7 +61,9 @@ test('unsubscribe GET is scanner-safe and RFC8058 POST mutates', async () => {
     })
     assert.equal(nip11Response.status, 200)
     assert.equal(nip11Response.headers.get('content-type'), 'application/nostr+json; charset=utf-8')
-    assert.equal((await nip11Response.json()).description, 'Budabit email digest subscription relay')
+    const nip11 = await nip11Response.json()
+    assert.equal(nip11.description, 'Budabit email digest subscription relay')
+    assert.equal(nip11.software, 'https://github.com/Pleb5/anchor')
 
     const getResponse = await fetch(`${base}/unsubscribe?token=safe-token`)
     assert.equal(getResponse.status, 200)

@@ -114,7 +114,7 @@ export function createServer(dependencies: ServerDependencies) {
         description: 'Budabit email digest subscription relay',
         pubkey: await dependencies.signer.getPubkey(),
         supported_nips: [1, 11, 42, 44],
-        software: 'https://github.com/coracle-social/anchor',
+        software: 'https://github.com/Pleb5/anchor',
       })
       return
     }
