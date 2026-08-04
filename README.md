@@ -4,9 +4,14 @@ Anchor is an authenticated Nostr relay and scheduler for Budabit repository emai
 
 Legacy alert tag arrays, push registrations, and per-alert cron jobs are not supported.
 
+## Documentation
+
+- [How Anchor works](docs/how-it-works.md): authentication, subscription lifecycle, scheduling, relay collection, filtering, compaction, delivery, and reliability limits.
+- [Self-hosting Anchor](docs/self-hosting.md): production installation, systemd, reverse proxy, Postmark, backups, updates, recovery, and security.
+
 ## Protocol
 
-Subscriptions are replaceable kind `32830` events. Their only outer tags must be:
+Subscriptions are addressable kind `32830` events. Their only outer tags must be:
 
 ```json
 [
@@ -15,7 +20,7 @@ Subscriptions are replaceable kind `32830` events. Their only outer tags must be
 ]
 ```
 
-The NIP-44 encrypted content must be a JSON object:
+The expected NIP-44 encrypted content must be a JSON object:
 
 ```json
 {
@@ -51,9 +56,11 @@ The NIP-44 encrypted content must be a JSON object:
 
 `manageUrl` is required and must be an absolute HTTPS URL without credentials or a fragment. It is used for the email settings link and its origin supplies the safe item-link fallback `/git/<repo_naddr>/<section>/<id>` when NIP-89 handler metadata is unavailable.
 
-Status is returned as encrypted JSON in kind `32831`. Events older than 24 hours or more than five minutes in the future are rejected. Payloads are limited to 64 KiB, repositories to 50, repository relays to three each, and unique repository relays to 20. The NIP-89 handler relay does not count toward the repository-relay limit.
+The current decryptor also accepts legacy NIP-04 subscription content for compatibility. Status is always returned as NIP-44 encrypted JSON in kind `32831`. Events older than 24 hours or more than five minutes in the future are rejected. Decrypted plaintext is limited to 64 KiB, repositories to 50, repository relays to three each, and unique repository relays to 20. The NIP-89 handler relay does not count toward the repository-relay limit.
 
-A same-email replacement remains confirmed and retains its next run when cadence is unchanged. A replacement with a different email pauses delivery and stores the new configuration as pending until that address is confirmed. Confirmation and unsubscribe links render a confirmation page on GET and mutate only on POST.
+A same-email replacement remains confirmed and retains its next run when cadence is unchanged. A replacement with a different email pauses delivery and stores the new configuration as pending until that address is confirmed. Unsubscribed, delivery-error, and validly deleted subscriptions can be reactivated by a newer same-email replacement. A same-email replacement does not bypass bounce or complaint suppression; changing to a newly confirmed address clears it. Confirmation and unsubscribe links render a confirmation page on GET and mutate only on POST.
+
+A kind `5` deletion must contain only an `a` tag for `32830:<subscriber pubkey>:budabit/email-digest` followed by a `p` tag for the Anchor pubkey. See [How Anchor Works](docs/how-it-works.md) for status fields and state transitions.
 
 ## Scheduling
 
@@ -94,7 +101,7 @@ pnpm test
 pnpm run build
 ```
 
-`pnpm run build:server` compiles the service and email/page templates without requiring `web/node_modules`.
+Anchor targets Node.js 22. The included Nix flake provides Node.js, pnpm, SQLite, and native build tools. `pnpm run build:server` compiles the service and copies email/page templates into `dist`.
 
 Run the built service with:
 
@@ -107,43 +114,6 @@ Operational endpoints:
 - `GET /health`: process liveness.
 - `GET /ready`: verifies SQLite and scheduler readiness.
 - `GET /` with `Accept: application/nostr+json`: NIP-11 metadata.
+- `WS /`: NIP-42 authenticated subscription relay.
 
-## Systemd
-
-```ini
-[Unit]
-Description=Anchor Budabit email digest
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=anchor
-Group=anchor
-WorkingDirectory=/srv/anchor
-EnvironmentFile=/srv/anchor/.env
-ExecStart=/usr/bin/node /srv/anchor/dist/index.js
-Restart=on-failure
-KillSignal=SIGTERM
-
-[Install]
-WantedBy=multi-user.target
-```
-
-The process handles `SIGTERM` and `SIGINT` by stopping new HTTP work, closing relay connections, draining websocket handlers with a bounded timeout, stopping the scheduler, closing collector sockets, and closing SQLite. A final process-level timeout prevents shutdown from hanging indefinitely.
-
-## Reverse Proxy
-
-Anchor trusts exactly one proxy hop. Preserve the public host and forwarding headers:
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:4738;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-```
+For production systemd, proxy, persistence, Postmark, health checks, backup, and upgrade instructions, follow the complete [self-hosting guide](docs/self-hosting.md).
