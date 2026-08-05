@@ -1,5 +1,5 @@
 import { WebSocket } from 'ws'
-import { decrypt, type ISigner } from '@welshman/signer'
+import { type ISigner } from '@welshman/signer'
 import { randomId } from '@welshman/lib'
 import {
   CLIENT_AUTH,
@@ -16,11 +16,12 @@ import {
   DIGEST_SUBSCRIPTION_KIND,
   MAX_EVENT_AGE_SECONDS,
   MAX_EVENT_FUTURE_SECONDS,
-  parseDigestConfig,
+  parseConfigForMode,
   validateSubscriptionEvent,
   ValidationError,
 } from './subscription.js'
 import { logStructured } from './logger.js'
+import { subscriptionIdentifier, type AnchorMode } from './mode.js'
 
 type RelayMessage = [string, ...any[]]
 
@@ -46,7 +47,8 @@ export class Connection {
     private readonly database: DigestDatabase,
     private readonly service: SubscriptionService,
     private readonly signer: ISigner,
-    private readonly expectedRelayUrl: string
+    private readonly expectedRelayUrl: string,
+    private readonly mode: AnchorMode = { mode: 'repository' }
   ) {
     this.send(['AUTH', this.auth.challenge])
   }
@@ -199,7 +201,12 @@ export class Connection {
 
   private async handleSubscription(event: SignedEvent) {
     const anchorPubkey = await this.signer.getPubkey()
-    validateSubscriptionEvent(event, anchorPubkey)
+    validateSubscriptionEvent(
+      event,
+      anchorPubkey,
+      currentSeconds(),
+      subscriptionIdentifier(this.mode)
+    )
     const existing = await this.database.getSubscription(event.pubkey)
     if (existing?.eventId === event.id) {
       this.send(['OK', event.id, true, 'duplicate: already accepted'])
@@ -211,11 +218,11 @@ export class Connection {
 
     let plaintext: string
     try {
-      plaintext = await decrypt(this.signer, event.pubkey, event.content)
+      plaintext = await this.signer.nip44.decrypt(event.pubkey, event.content)
     } catch {
       throw new ValidationError('failed to decrypt event content')
     }
-    const config = parseDigestConfig(plaintext)
+    const config = parseConfigForMode(plaintext, this.mode)
     const subscription = await this.service.add(event, config)
     this.send(['OK', event.id, true, ''])
 

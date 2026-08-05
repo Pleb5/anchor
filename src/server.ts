@@ -10,6 +10,7 @@ import { ActionError, SubscriptionService } from './actions.js'
 import { Connection, normalizeNip42RelayUrl } from './relay.js'
 import { render } from './templates.js'
 import { logStructured } from './logger.js'
+import type { AnchorMode } from './mode.js'
 
 type ServerDependencies = {
   database: DigestDatabase
@@ -20,6 +21,8 @@ type ServerDependencies = {
   anchorUrl: string
   webhookUsername?: string
   webhookSecret: string
+  mode?: AnchorMode
+  advertisement?: { readonly ready: boolean }
 }
 
 type AsyncHandler = (request: Request, response: Response) => Promise<unknown>
@@ -90,11 +93,15 @@ export function createServer(dependencies: ServerDependencies) {
 
   addRoute('get', '/ready', async (_request, response) => {
     const databaseReady = await dependencies.database.ping().catch(() => false)
-    const ready = databaseReady && dependencies.scheduler.ready
+    const advertisementReady = dependencies.advertisement?.ready ?? true
+    const ready = databaseReady && dependencies.scheduler.ready && advertisementReady
     response.status(ready ? 200 : 503).json({
       status: ready ? 'ready' : 'not_ready',
       database: databaseReady ? 'ready' : 'not_ready',
       scheduler: dependencies.scheduler.ready ? 'ready' : 'not_ready',
+      ...(dependencies.mode?.mode === 'community'
+        ? { advertisement: advertisementReady ? 'ready' : 'not_ready' }
+        : {}),
     })
   })
 
@@ -111,10 +118,17 @@ export function createServer(dependencies: ServerDependencies) {
     if (acceptsNip11(request.get('accept'))) {
       response.type('application/nostr+json').json({
         name: dependencies.anchorName,
-        description: 'Budabit email digest subscription relay',
+        description:
+          dependencies.mode?.mode === 'community'
+            ? `Budabit community alerts for ${dependencies.mode.communityPubkey}`
+            : 'Budabit email digest subscription relay',
         pubkey: await dependencies.signer.getPubkey(),
         supported_nips: [1, 11, 42, 44],
         software: 'https://github.com/Pleb5/anchor',
+        mode: dependencies.mode?.mode || 'repository',
+        ...(dependencies.mode?.mode === 'community'
+          ? { community: dependencies.mode.communityPubkey }
+          : {}),
       })
       return
     }
@@ -231,7 +245,8 @@ export function createServer(dependencies: ServerDependencies) {
       dependencies.database,
       dependencies.service,
       dependencies.signer,
-      relayUrl
+      relayUrl,
+      dependencies.mode
     )
     connections.add(connection)
     let resolveSocketClose = () => {}

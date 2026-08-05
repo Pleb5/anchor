@@ -2,6 +2,10 @@ import type { DigestDatabase, DigestRun, Subscription } from './database.js'
 import type { DigestData } from './digest.js'
 import { getDuePeriod } from './schedule.js'
 import { logStructured } from './logger.js'
+import type { EligibilityGate } from './actions.js'
+import type { CommunityDigestData } from './community-digest.js'
+
+type DigestPayload = DigestData | CommunityDigestData
 
 type Collector = {
   collect(
@@ -9,12 +13,12 @@ type Collector = {
     pubkey: string,
     periodStart: number,
     periodEnd: number
-  ): Promise<DigestData>
+  ): Promise<DigestPayload>
   close(): void | Promise<void>
 }
 
 type Sender = {
-  sendDigest(subscription: Subscription, run: DigestRun, data: DigestData): Promise<string>
+  sendDigest(subscription: Subscription, run: DigestRun, data: DigestPayload): Promise<string>
 }
 
 const retryDelay = (attempts: number) => {
@@ -39,7 +43,8 @@ export class DigestScheduler {
     private readonly sender: Sender,
     private readonly pollIntervalMs = 30_000,
     private readonly concurrency = 3,
-    private readonly clock = () => Math.floor(Date.now() / 1000)
+    private readonly clock = () => Math.floor(Date.now() / 1000),
+    private readonly eligibility?: EligibilityGate
   ) {}
 
   get ready() {
@@ -79,6 +84,7 @@ export class DigestScheduler {
     this.polling = true
     try {
       const currentTime = this.clock()
+      await this.reconcileEligibility(currentTime)
       const due = await this.database.getDueSubscriptions(currentTime, available)
       if (!this.stopping) {
         for (const subscription of due) this.launch(subscription, currentTime)
@@ -97,6 +103,7 @@ export class DigestScheduler {
   }
 
   async runOnce(currentTime = this.clock()) {
+    await this.reconcileEligibility(currentTime)
     const due = await this.database.getDueSubscriptions(currentTime, this.concurrency)
     const tasks = due
       .filter((subscription) => !this.active.has(subscription.pubkey))
@@ -114,6 +121,8 @@ export class DigestScheduler {
 
   private async process(subscription: Subscription, currentTime: number) {
     if (!subscription.config || !subscription.confirmedEmail || !subscription.nextRunAt) return
+
+    if (!(await this.ensureEligible(subscription, currentTime))) return
 
     let run = await this.database.getPendingRun(subscription.pubkey)
     if (run && run.subscriptionEventId !== subscription.eventId) {
@@ -156,6 +165,10 @@ export class DigestScheduler {
         run.periodEnd
       )
       await this.database.setRunEventCount(run.runId, data.eventCount, currentTime)
+      if (!(await this.ensureEligible(subscription, currentTime))) {
+        await this.database.cancelDigestRun(run.runId, currentTime)
+        return
+      }
       const deliverable = await this.database.isDeliverable(
         subscription.pubkey,
         run.subscriptionEventId,
@@ -254,6 +267,32 @@ export class DigestScheduler {
           errorType: error instanceof Error ? error.name : 'Error',
         })
       }
+    }
+  }
+
+  private async ensureEligible(subscription: Subscription, currentTime: number) {
+    if (!this.eligibility) return true
+    const result = await this.eligibility.check(subscription.pubkey)
+    if (result.eligible) return true
+    await this.database.markSubscriptionIneligible(
+      subscription.pubkey,
+      result.reason || 'Current community membership is required',
+      currentTime
+    )
+    logStructured({
+      category: 'subscription',
+      status: 'ineligible',
+      subscription: subscription.pubkey,
+      eventId: subscription.eventId,
+    })
+    return false
+  }
+
+  private async reconcileEligibility(currentTime: number) {
+    if (!this.eligibility) return
+    const subscriptions = await this.database.getEligibilitySubscriptions()
+    for (const subscription of subscriptions) {
+      await this.ensureEligible(subscription, currentTime)
     }
   }
 

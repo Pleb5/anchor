@@ -3,26 +3,54 @@ import type { ISigner } from '@welshman/signer'
 import type { DigestDatabase, Subscription } from './database.js'
 import type { DigestConfig } from './subscription.js'
 import {
-  DIGEST_IDENTIFIER,
   DIGEST_STATUS_KIND,
   validateSubscriptionDeletionEvent,
 } from './subscription.js'
+import {
+  statusIdentifier,
+  subscriptionIdentifier,
+  type AnchorMode,
+} from './mode.js'
 import { firstRunAfter } from './schedule.js'
 import type { EmailService } from './mailer.js'
 import { logStructured } from './logger.js'
 
 export class ActionError extends Error {}
 
+export type EligibilityResult = {
+  eligible: boolean
+  role?: 'admin' | 'moderator' | 'member'
+  reason?: string
+}
+
+export type EligibilityGate = {
+  check(pubkey: string): Promise<EligibilityResult>
+  readonly ready: boolean
+}
+
 export class SubscriptionService {
   constructor(
     private readonly database: DigestDatabase,
     private readonly mailer: EmailService,
     private readonly signer: ISigner,
-    private readonly clock = () => Math.floor(Date.now() / 1000)
+    private readonly clock = () => Math.floor(Date.now() / 1000),
+    private readonly mode: AnchorMode = { mode: 'repository' },
+    private readonly eligibility?: EligibilityGate
   ) {}
 
   async add(event: SignedEvent, config: DigestConfig) {
     const currentTime = this.clock()
+    if (this.mode.mode === 'community') {
+      let eligibility: EligibilityResult
+      try {
+        eligibility = await this.eligibility!.check(event.pubkey)
+      } catch {
+        throw new ActionError('Community membership could not be verified')
+      }
+      if (!eligibility.eligible) {
+        throw new ActionError(eligibility.reason || 'Current community membership is required')
+      }
+    }
     const result = await this.database.upsertSubscription(
       event,
       config,
@@ -105,7 +133,11 @@ export class SubscriptionService {
   }
 
   async delete(event: SignedEvent) {
-    validateSubscriptionDeletionEvent(event, await this.signer.getPubkey())
+    validateSubscriptionDeletionEvent(
+      event,
+      await this.signer.getPubkey(),
+      subscriptionIdentifier(this.mode)
+    )
     const deleted = await this.database.deleteSubscription(event.pubkey, event.created_at, this.clock())
     if (!deleted) throw new ActionError('Deletion is stale or the subscription does not exist')
     return true
@@ -117,7 +149,7 @@ export class SubscriptionService {
       makeEvent(DIGEST_STATUS_KIND, {
         content: await this.signer.nip44.encrypt(subscription.pubkey, JSON.stringify(status)),
         tags: [
-          ['d', DIGEST_IDENTIFIER],
+          ['d', statusIdentifier(this.mode, subscription.pubkey)],
           ['p', subscription.pubkey],
         ],
       })
@@ -144,11 +176,14 @@ export function getSubscriptionStatus(subscription: Subscription) {
     message = 'This email digest has been unsubscribed.'
   } else if (subscription.state === 'deleted') {
     message = 'This email digest has been deleted.'
+  } else if (subscription.state === 'ineligible') {
+    status = 'inactive'
+    message = subscription.lastError || 'Current community membership is required.'
   }
 
   return {
     version: 1,
-    channel: 'email-digest',
+    channel: subscription.config?.channel || subscription.pendingConfig?.channel || 'email-digest',
     status,
     state: subscription.state,
     message,

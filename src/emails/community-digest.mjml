@@ -1,0 +1,61 @@
+<mjml>
+  <mj-head>
+    <mj-title>Budabit community alerts</mj-title>
+    <mj-preview>{{preheader}}</mj-preview>
+    <mj-attributes>
+      <mj-all font-family="Arial, sans-serif" />
+      <mj-text color="#23302d" font-size="14px" line-height="21px" />
+      <mj-button background-color="#286a5b" color="#ffffff" border-radius="4px" font-weight="700" />
+    </mj-attributes>
+    <mj-style inline="inline">
+      .eyebrow { color:#286a5b; font-size:11px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; }
+      .row { border-top:1px solid #dce6e2; padding:13px 0; }
+      .title { color:#16231f; font-size:15px; font-weight:700; }
+      .meta { color:#66736f; font-size:12px; }
+      .summary { color:#3f4d49; font-size:13px; }
+      .link { color:#286a5b; font-weight:700; text-decoration:none; }
+    </mj-style>
+  </mj-head>
+  <mj-body width="600px" background-color="#eef3f1">
+    <mj-section background-color="#173b34" padding="24px 28px">
+      <mj-column>
+        <mj-text color="#ffffff" font-size="20px" font-weight="800" padding="0">BUDABIT COMMUNITY</mj-text>
+        <mj-text color="#c9dbd5" font-size="12px" padding="5px 0 0">The useful activity, compacted</mj-text>
+      </mj-column>
+    </mj-section>
+    <mj-section background-color="#ffffff" padding="28px 28px 18px">
+      <mj-column>
+        <mj-text css-class="eyebrow" padding="0 0 7px">Your community digest</mj-text>
+        <mj-text color="#16231f" font-size="27px" font-weight="800" padding="0 0 7px">What needs your eye</mj-text>
+        <mj-text color="#66736f" padding="0">{{dateRange}} &middot; {{total}} updates</mj-text>
+      </mj-column>
+    </mj-section>
+    {{#hasNeedsAttention}}
+    <mj-section background-color="#fff8ec" padding="22px 28px 8px">
+      <mj-column>
+        <mj-text color="#16231f" font-size="19px" font-weight="800" padding="0 0 8px">Needs attention</mj-text>
+        {{#needsAttention}}
+        <mj-text css-class="row" padding="13px 0">
+          <div class="title">{{title}}</div><div class="meta">{{author}} &middot; {{timestamp}}</div>
+          <div class="summary">{{summary}}</div><a class="link" href="{{link}}">Open in Budabit</a>
+        </mj-text>
+        {{/needsAttention}}
+      </mj-column>
+    </mj-section>
+    {{/hasNeedsAttention}}
+    <mj-section background-color="#ffffff" padding="22px 28px 10px">
+      <mj-column>
+        {{#hasForYou}}<mj-text color="#16231f" font-size="19px" font-weight="800" padding="0 0 8px">For you</mj-text>{{/hasForYou}}
+        {{#forYou}}<mj-text css-class="row" padding="13px 0"><div class="title">{{title}}</div><div class="meta">{{author}} &middot; {{timestamp}}</div><div class="summary">{{summary}}</div><a class="link" href="{{link}}">Open in Budabit</a></mj-text>{{/forYou}}
+        {{#hasAppreciation}}<mj-text color="#16231f" font-size="19px" font-weight="800" padding="20px 0 8px">Appreciation</mj-text>{{/hasAppreciation}}
+        {{#appreciation}}<mj-text css-class="row" padding="13px 0"><div class="title">{{title}}</div><div class="meta">{{author}} &middot; {{timestamp}}</div><div class="summary">{{summary}}</div><a class="link" href="{{link}}">Open in Budabit</a></mj-text>{{/appreciation}}
+        {{#hasHighlights}}<mj-text color="#16231f" font-size="19px" font-weight="800" padding="20px 0 8px">Community highlights</mj-text>{{/hasHighlights}}
+        {{#highlights}}<mj-text css-class="row" padding="13px 0"><div class="title">{{title}}</div><div class="meta">{{author}} &middot; {{timestamp}}</div><div class="summary">{{summary}}</div><a class="link" href="{{link}}">Open in Budabit</a></mj-text>{{/highlights}}
+        {{#hasOverflow}}<mj-text align="center" color="#66736f" font-size="12px">{{overflow}} additional grouped rows were omitted.</mj-text>{{/hasOverflow}}
+        {{#sourceTruncated}}<mj-text align="center" color="#875d13" font-size="12px">High-volume relay results reached the service safety limit. Open Budabit for current activity.</mj-text>{{/sourceTruncated}}
+      </mj-column>
+    </mj-section>
+    <mj-section background-color="#ffffff" padding="8px 28px 28px"><mj-column><mj-button href="{{manageUrl}}">Manage community alerts</mj-button></mj-column></mj-section>
+    <mj-section background-color="#dfe9e5" padding="18px 28px"><mj-column><mj-text align="center" color="#66736f" font-size="11px" padding="0">Sent by {{anchorName}} to a confirmed community member.<br /><a href="{{manageUrl}}" style="color:#3f4d49">Manage settings</a> &middot; <a href="{{unsubscribeUrl}}" style="color:#3f4d49">Unsubscribe</a></mj-text></mj-column></mj-section>
+  </mj-body>
+</mjml>

@@ -3,6 +3,7 @@ import sqlite3 from 'sqlite3'
 import type { SignedEvent } from '@welshman/util'
 import type { DigestConfig } from './subscription.js'
 import { getSubscriptionAddress } from './subscription.js'
+import { subscriptionIdentifier, type AnchorMode } from './mode.js'
 
 export type SubscriptionState =
   | 'pending'
@@ -11,6 +12,7 @@ export type SubscriptionState =
   | 'suppressed'
   | 'deleted'
   | 'error'
+  | 'ineligible'
 
 export type Subscription = {
   pubkey: string
@@ -126,7 +128,10 @@ export class DigestDatabase {
   private closed = false
   private writeLock = Promise.resolve()
 
-  constructor(path = process.env.ANCHOR_DB_PATH || 'anchor.db') {
+  constructor(
+    path = process.env.ANCHOR_DB_PATH || 'anchor.db',
+    private readonly mode: AnchorMode = { mode: 'repository' }
+  ) {
     this.db = new sqlite3.Database(path)
     this.db.configure('busyTimeout', 5000)
   }
@@ -187,7 +192,22 @@ export class DigestDatabase {
   async initialize() {
     if (this.initialized) return
     await this.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
+    const existingMetadata = await this.get<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'anchor_metadata'`
+    )
+    const existingSubscriptions = await this.get<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'subscriptions'`
+    )
+    if (!existingMetadata && existingSubscriptions) {
+      throw new Error('Database lacks Anchor schema identity metadata; use a fresh database')
+    }
     await this.exec(`
+      CREATE TABLE IF NOT EXISTS anchor_metadata (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        schema_version INTEGER NOT NULL,
+        mode TEXT NOT NULL,
+        community_pubkey TEXT
+      );
       CREATE TABLE IF NOT EXISTS subscriptions (
         pubkey TEXT PRIMARY KEY,
         address TEXT NOT NULL UNIQUE,
@@ -238,6 +258,25 @@ export class DigestDatabase {
         ON digest_runs (subscription_pubkey, period_end)
         WHERE status IN ('queued', 'running', 'retrying');
     `)
+
+    const expectedCommunity = this.mode.mode === 'community' ? this.mode.communityPubkey : null
+    await this.run(
+      `INSERT OR IGNORE INTO anchor_metadata (singleton, schema_version, mode, community_pubkey)
+       VALUES (1, 1, ?, ?)`,
+      [this.mode.mode, expectedCommunity]
+    )
+    const metadata = await this.get<{
+      schema_version: number
+      mode: string
+      community_pubkey: string | null
+    }>('SELECT schema_version, mode, community_pubkey FROM anchor_metadata WHERE singleton = 1')
+    if (
+      metadata?.schema_version !== 1 ||
+      metadata.mode !== this.mode.mode ||
+      metadata.community_pubkey !== expectedCommunity
+    ) {
+      throw new Error('Database schema identity does not match configured Anchor mode/community')
+    }
 
     const currentTime = Math.floor(Date.now() / 1000)
     await this.transaction(async () => {
@@ -389,7 +428,7 @@ export class DigestDatabase {
          WHERE excluded.event_created_at > subscriptions.event_created_at`,
         [
           event.pubkey,
-          getSubscriptionAddress(event.pubkey),
+          getSubscriptionAddress(event.pubkey, subscriptionIdentifier(this.mode)),
           event.id,
           event.created_at,
           JSON.stringify(event),
@@ -529,6 +568,29 @@ export class DigestDatabase {
         pubkey,
       ])
     )
+  }
+
+  async markSubscriptionIneligible(pubkey: string, reason: string, currentTime: number) {
+    return this.transaction(async () => {
+      const result = await this.run(
+        `UPDATE subscriptions SET state = 'ineligible', last_error = ?, next_run_at = NULL,
+         updated_at = ? WHERE pubkey = ? AND state IN ('active', 'pending', 'error')`,
+        [reason, currentTime, pubkey]
+      )
+      await this.run(
+        `UPDATE digest_runs SET status = 'canceled', error = ?, completed_at = ?, updated_at = ?
+         WHERE subscription_pubkey = ? AND status IN ('queued', 'running', 'retrying')`,
+        [reason, currentTime, currentTime, pubkey]
+      )
+      return result.changes > 0
+    })
+  }
+
+  async getEligibilitySubscriptions() {
+    const rows = await this.all(
+      `SELECT * FROM subscriptions WHERE state IN ('active', 'pending') ORDER BY pubkey`
+    )
+    return rows.map(parseSubscription) as Subscription[]
   }
 
   async getDueSubscriptions(currentTime: number, limit: number) {

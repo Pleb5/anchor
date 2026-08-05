@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DigestDatabase } from '../dist/database.js'
 import { DigestScheduler } from '../dist/scheduler.js'
-import { config, subscriptionEvent } from './helpers.js'
+import { COMMUNITY_PUBKEY, communityConfig, config, subscriptionEvent } from './helpers.js'
 
 const withDatabase = async (run) => {
   const directory = await mkdtemp(join(tmpdir(), 'anchor-test-'))
@@ -406,4 +406,101 @@ test('scheduler performs three retries after the initial attempt', async () => {
     assert.equal(runs[0].status, 'failed')
     assert.equal(subscription.state, 'error')
   })
+})
+
+test('database identity aborts repository/community and community/pubkey reuse', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'anchor-mode-test-'))
+  const path = join(directory, 'anchor.db')
+  const communityPath = join(directory, 'community.db')
+  const communityMode = {
+    mode: 'community',
+    communityPubkey: COMMUNITY_PUBKEY,
+    bootstrapRelays: ['wss://relay.example/'],
+    handlerAddress: `31990:${'e'.repeat(64)}:budabit`,
+    handlerRelay: 'wss://handler.example/',
+  }
+  let database = new DigestDatabase(path, { mode: 'repository' })
+  try {
+    await database.initialize()
+    await database.close()
+    database = new DigestDatabase(path, communityMode)
+    await assert.rejects(database.initialize(), /does not match/)
+    await database.close()
+
+    database = new DigestDatabase(communityPath, communityMode)
+    await database.initialize()
+    await database.close()
+    database = new DigestDatabase(communityPath, {
+      ...communityMode,
+      communityPubkey: 'f'.repeat(64),
+    })
+    await assert.rejects(database.initialize(), /does not match/)
+  } finally {
+    await database.close().catch(() => undefined)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('membership loss marks ineligible, cancels scheduling, and only a newer registration restores', async () => {
+  const communityMode = {
+    mode: 'community',
+    communityPubkey: COMMUNITY_PUBKEY,
+    bootstrapRelays: ['wss://relay.example/'],
+    handlerAddress: `31990:${'e'.repeat(64)}:budabit`,
+    handlerRelay: 'wss://handler.example/',
+  }
+  const directory = await mkdtemp(join(tmpdir(), 'anchor-ineligible-test-'))
+  const database = new DigestDatabase(join(directory, 'anchor.db'), communityMode)
+  try {
+    await database.initialize()
+    const event = {
+      ...subscriptionEvent(100),
+      tags: [
+        ['d', `budabit/community-alerts/${COMMUNITY_PUBKEY}`],
+        ['p', 'b'.repeat(64)],
+      ],
+    }
+    const pending = await database.upsertSubscription(
+      event,
+      communityConfig(),
+      200,
+      100
+    )
+    await database.confirmSubscription(pending.confirmationToken, 200, 100)
+    let collections = 0
+    const scheduler = new DigestScheduler(
+      database,
+      { async collect() { collections++; throw new Error('must not collect') }, close() {} },
+      { async sendDigest() { throw new Error('must not send') } },
+      30_000,
+      3,
+      () => 200,
+      { ready: true, async check() { return { eligible: false, reason: 'membership revoked' } } }
+    )
+    await scheduler.runOnce(200)
+    const ineligible = await database.getSubscription(event.pubkey)
+    assert.equal(ineligible.state, 'ineligible')
+    assert.equal(ineligible.nextRunAt, undefined)
+    assert.equal(collections, 0)
+
+    const stale = await database.upsertSubscription(
+      { ...event, id: '2'.repeat(64), created_at: 99 },
+      communityConfig(),
+      300,
+      201
+    )
+    assert.equal(stale.applied, false)
+    assert.equal(stale.subscription.state, 'ineligible')
+    const restored = await database.upsertSubscription(
+      { ...event, id: '3'.repeat(64), created_at: 101 },
+      communityConfig(),
+      300,
+      202
+    )
+    assert.equal(restored.subscription.state, 'active')
+    assert.equal(restored.subscription.nextRunAt, 300)
+  } finally {
+    await database.close()
+    await rm(directory, { recursive: true, force: true })
+  }
 })

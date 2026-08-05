@@ -1,6 +1,8 @@
 import 'localstorage-polyfill'
 import { DigestDatabase } from './database.js'
 import { DigestCollector } from './digest.js'
+import { CommunityDigestCollector } from './community-digest.js'
+import { CommunityContext } from './community.js'
 import { EmailService } from './mailer.js'
 import { DigestScheduler } from './scheduler.js'
 import { SubscriptionService } from './actions.js'
@@ -8,6 +10,7 @@ import { createServer } from './server.js'
 import {
   ANCHOR_DB_PATH,
   ANCHOR_NAME,
+  ANCHOR_MODE,
   ANCHOR_URL,
   HOST,
   PORT,
@@ -20,18 +23,74 @@ import {
   appSigner,
 } from './env.js'
 import { logStructured } from './logger.js'
+import { communityDescriptor } from './mode.js'
+import type { DigestConfig } from './subscription.js'
 
-const database = new DigestDatabase(ANCHOR_DB_PATH)
-const collector = new DigestCollector()
+const servicePubkey = await appSigner.getPubkey()
+const community =
+  ANCHOR_MODE.mode === 'community'
+    ? new CommunityContext(
+        ANCHOR_MODE,
+        communityDescriptor(ANCHOR_MODE, servicePubkey, ANCHOR_URL)
+      )
+    : undefined
+if (community) {
+  await community.refresh().catch((error) => {
+    logStructured({
+      category: 'server',
+      status: 'community_definition_unavailable',
+      errorType: error instanceof Error ? error.name : 'Error',
+    })
+  })
+  community.start()
+}
+const database = new DigestDatabase(ANCHOR_DB_PATH, ANCHOR_MODE)
+const repositoryCollector = ANCHOR_MODE.mode === 'repository' ? new DigestCollector() : undefined
+const communityCollector =
+  ANCHOR_MODE.mode === 'community' && community
+    ? new CommunityDigestCollector(community, ANCHOR_MODE)
+    : undefined
+const collector = {
+  async collect(config: DigestConfig, pubkey: string, periodStart: number, periodEnd: number) {
+    if (config.channel === 'community-alerts') {
+      if (!communityCollector) throw new Error('Community collector is not configured')
+      return communityCollector.collect(config, pubkey, periodStart, periodEnd)
+    }
+    if (!repositoryCollector) throw new Error('Repository collector is not configured')
+    return repositoryCollector.collect(config, pubkey, periodStart, periodEnd)
+  },
+  async close() {
+    await repositoryCollector?.close()
+    await communityCollector?.close()
+  },
+}
 const mailer = new EmailService({
   apiKey: POSTMARK_API_KEY,
   sender: POSTMARK_SENDER_ADDRESS,
   anchorName: ANCHOR_NAME,
   anchorUrl: ANCHOR_URL,
   messageStream: POSTMARK_MESSAGE_STREAM,
+  mode: ANCHOR_MODE.mode,
+  communityPubkey:
+    ANCHOR_MODE.mode === 'community' ? ANCHOR_MODE.communityPubkey : undefined,
 })
-const service = new SubscriptionService(database, mailer, appSigner)
-const scheduler = new DigestScheduler(database, collector, mailer, SCHEDULER_POLL_MS, 3)
+const service = new SubscriptionService(
+  database,
+  mailer,
+  appSigner,
+  undefined,
+  ANCHOR_MODE,
+  community
+)
+const scheduler = new DigestScheduler(
+  database,
+  collector,
+  mailer,
+  SCHEDULER_POLL_MS,
+  3,
+  undefined,
+  community
+)
 const { app, closeConnections } = createServer({
   database,
   scheduler,
@@ -41,6 +100,8 @@ const { app, closeConnections } = createServer({
   anchorUrl: ANCHOR_URL,
   webhookUsername: POSTMARK_WEBHOOK_USERNAME,
   webhookSecret: POSTMARK_WEBHOOK_SECRET,
+  mode: ANCHOR_MODE,
+  advertisement: community,
 })
 
 let shuttingDown = false
@@ -98,6 +159,5 @@ process.on('uncaughtException', (error) => {
 await database.initialize()
 scheduler.start()
 httpServer = app.listen(PORT, HOST, async () => {
-  const pubkey = await appSigner.getPubkey()
-  console.log(`Anchor email digest listening on ${HOST}:${PORT} as ${pubkey}`)
+  console.log(`Anchor ${ANCHOR_MODE.mode} email service listening on ${HOST}:${PORT} as ${servicePubkey}`)
 })

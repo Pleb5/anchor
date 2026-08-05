@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { Nip01Signer } from '@welshman/signer'
+import { parseAnchorMode } from './mode.js'
 
 const required = (name: string) => {
   const value = process.env[name]?.trim()
@@ -27,3 +28,4 @@ export const HOST = process.env.HOST?.trim() || '127.0.0.1'
 export const PORT = integer('PORT', 4738)
 export const SCHEDULER_POLL_MS = integer('SCHEDULER_POLL_MS', 30_000)
 export const ANCHOR_DB_PATH = process.env.ANCHOR_DB_PATH?.trim() || 'anchor.db'
+export const ANCHOR_MODE = parseAnchorMode(process.env)

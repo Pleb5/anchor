@@ -6,8 +6,9 @@ import {
   EmailService,
   buildPostmarkDigestMessage,
   buildDigestSubject,
+  buildCommunityDigestSubject,
 } from '../dist/mailer.js'
-import { config } from './helpers.js'
+import { COMMUNITY_PUBKEY, communityConfig, config } from './helpers.js'
 
 test('GET action links are confirmation-only while POST is mutating', () => {
   assert.equal(actionRequestMode('GET'), 'confirm')
@@ -21,6 +22,46 @@ test('NIP-11 requires an explicit application/nostr+json Accept value', () => {
   assert.equal(acceptsNip11('application/nostr+json; q=0'), false)
   assert.equal(acceptsNip11('*/*'), false)
   assert.equal(acceptsNip11('text/html,application/xhtml+xml'), false)
+})
+
+test('community NIP-11 and readiness expose the pinned verified mode', async () => {
+  const mode = {
+    mode: 'community',
+    communityPubkey: COMMUNITY_PUBKEY,
+    bootstrapRelays: ['wss://relay.example/'],
+    handlerAddress: `31990:${'d'.repeat(64)}:budabit`,
+    handlerRelay: 'wss://handler.example/',
+  }
+  const { app, closeConnections } = createServer({
+    database: { async ping() { return true } },
+    scheduler: { ready: true },
+    service: {},
+    signer: { async getPubkey() { return 'a'.repeat(64) } },
+    anchorName: 'Community Anchor',
+    anchorUrl: 'http://127.0.0.1:4739',
+    webhookSecret: 'secret',
+    mode,
+    advertisement: { ready: false },
+  })
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise((resolve) => server.once('listening', resolve))
+  const address = server.address()
+  const base = `http://127.0.0.1:${address.port}`
+  try {
+    const ready = await fetch(`${base}/ready`)
+    assert.equal(ready.status, 503)
+    assert.equal((await ready.json()).advertisement, 'not_ready')
+    const response = await fetch(`${base}/`, {
+      headers: { accept: 'application/nostr+json' },
+    })
+    const nip11 = await response.json()
+    assert.equal(nip11.mode, 'community')
+    assert.equal(nip11.community, COMMUNITY_PUBKEY)
+    assert.match(nip11.description, new RegExp(COMMUNITY_PUBKEY))
+  } finally {
+    await closeConnections()
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+  }
 })
 
 test('unsubscribe GET is scanner-safe and RFC8058 POST mutates', async () => {
@@ -246,6 +287,10 @@ test('EmailService compiles responsive MJML and sends matching HTML and text bod
           updates: 0,
           statuses: 0,
           assignments: 1,
+          reactions: 1,
+          zaps: 1,
+          zapSats: 0,
+          zapsWithAmount: 0,
           total: 1,
         },
         attentionCount: 1,
@@ -272,6 +317,66 @@ test('EmailService compiles responsive MJML and sends matching HTML and text bod
   assert.match(sent.HtmlBody, /<div[^>]*color:#ffffff[^>]*>1<\/div>/)
   assert.match(sent.HtmlBody, /<div[^>]*color:#b7c0d2[^>]*>Updates<\/div>/)
   assert.match(sent.TextBody, /NEEDS ATTENTION/)
+  assert.match(sent.TextBody, /1 reaction \/ 1 zap/)
   assert.match(sent.TextBody, /Manage settings: https:\/\/budabit\.example\/settings\/notifications/)
   assert.equal(sent.MessageStream, 'digests')
+})
+
+test('community email uses separate sections, subject, text, and Postmark metadata', async () => {
+  let sent
+  const mailer = new EmailService(
+    {
+      apiKey: 'unused',
+      sender: 'community@example.com',
+      anchorName: 'Community Anchor',
+      anchorUrl: 'https://alerts.example',
+      messageStream: 'community-digests',
+      mode: 'community',
+      communityPubkey: COMMUNITY_PUBKEY,
+    },
+    { async sendEmail(message) { sent = message; return { MessageID: 'community-message' } } }
+  )
+  const row = {
+    key: 'needs:one',
+    section: 'needsAttention',
+    title: 'Publishing request',
+    summary: '1 request',
+    author: 'Member',
+    createdAt: 150,
+    link: 'https://budabit.example/nevent',
+    eventCount: 1,
+  }
+  const data = {
+    periodStart: 100,
+    periodEnd: 200,
+    eventCount: 2,
+    overflow: 1,
+    sourceTruncated: true,
+    needsAttention: [row],
+    forYou: [],
+    appreciation: [{ ...row, key: 'thanks:one', section: 'appreciation', title: 'Your post' }],
+    highlights: [],
+  }
+  const messageId = await mailer.sendDigest(
+    {
+      pubkey: 'a'.repeat(64),
+      eventId: 'event-id',
+      config: communityConfig(),
+      confirmedEmail: 'member@example.com',
+      unsubscribeToken: 'unsubscribe-token',
+    },
+    { runId: 'community-run', periodEnd: 200 },
+    data
+  )
+  assert.equal(messageId, 'community-message')
+  assert.equal(buildCommunityDigestSubject(data), '[Budabit] 1 community item for you')
+  assert.match(sent.HtmlBody, /Needs attention/)
+  assert.match(sent.HtmlBody, /Appreciation/)
+  assert.match(sent.HtmlBody, /High-volume relay results/)
+  assert.match(sent.TextBody, /NEEDS ATTENTION/)
+  assert.doesNotMatch(sent.HtmlBody, /Repositories/)
+  assert.equal(sent.Tag, 'community-alerts')
+  assert.equal(sent.MessageStream, 'community-digests')
+  assert.equal(sent.Metadata.mode, 'community')
+  assert.equal(sent.Metadata.community, COMMUNITY_PUBKEY)
 })

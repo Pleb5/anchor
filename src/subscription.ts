@@ -1,5 +1,6 @@
 import { DateTime, IANAZone } from 'luxon'
 import { DELETE, type SignedEvent } from '@welshman/util'
+import type { AnchorMode } from './mode.js'
 
 export const DIGEST_SUBSCRIPTION_KIND = 32830
 export const DIGEST_STATUS_KIND = 32831
@@ -12,17 +13,19 @@ export type DigestOptions = {
   issues: { new: boolean; comments: boolean }
   prs: { new: boolean; comments: boolean; updates: boolean }
   status: { open: boolean; draft: boolean; applied: boolean; closed: boolean }
+  engagement: { reactions: boolean; zaps: boolean }
   assignments: boolean
 }
 
 export type DigestRepository = {
   address: string
   name: string
+  /** WSS lookup hints used only to fetch the exact repository announcement. */
   relays: string[]
   options: DigestOptions
 }
 
-export type DigestConfig = {
+export type RepositoryDigestConfig = {
   version: 1
   channel: 'email-digest'
   email: string
@@ -39,6 +42,27 @@ export type DigestConfig = {
   }
   repositories: DigestRepository[]
 }
+
+export type CommunityPreferences = {
+  density: 'compact' | 'expanded'
+  engagement: { replies: boolean; mentions: boolean; reactions: boolean; zaps: boolean }
+  access: { membership: boolean; publishing: boolean; moderatorRequests: boolean }
+  moderation: { reports: boolean; actions: boolean }
+  highlights: { rooms: boolean; threads: boolean; calendar: boolean; goals: boolean }
+}
+
+export type CommunityDigestConfig = {
+  version: 1
+  channel: 'community-alerts'
+  community: string
+  email: string
+  manageUrl: string
+  locale?: string
+  cadence: RepositoryDigestConfig['cadence']
+  preferences: CommunityPreferences
+}
+
+export type DigestConfig = RepositoryDigestConfig | CommunityDigestConfig
 
 export class ValidationError extends Error {}
 
@@ -102,13 +126,7 @@ export const normalizeRelayUrl = (value: unknown, field = 'relay') => {
     throw new ValidationError(`${field} must be a valid wss URL`)
   }
 
-  if (
-    url.protocol !== 'wss:' ||
-    !url.hostname ||
-    url.username ||
-    url.password ||
-    url.hash
-  ) {
+  if (url.protocol !== 'wss:' || !url.hostname || url.username || url.password || url.hash) {
     throw new ValidationError(`${field} must be a valid wss URL`)
   }
 
@@ -127,13 +145,7 @@ export const normalizeHttpsUrl = (value: unknown, field = 'URL') => {
     throw new ValidationError(`${field} must be a valid HTTPS URL`)
   }
 
-  if (
-    url.protocol !== 'https:' ||
-    !url.hostname ||
-    url.username ||
-    url.password ||
-    url.hash
-  ) {
+  if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.hash) {
     throw new ValidationError(`${field} must be a valid HTTPS URL`)
   }
   return url.toString()
@@ -152,7 +164,7 @@ const normalizeAddress = (value: unknown, kind: number, field: string) => {
 
 const parseOptions = (value: unknown, field: string): DigestOptions => {
   const options = assertObject(value, field)
-  assertKeys(options, ['issues', 'prs', 'status', 'assignments'], field)
+  assertKeys(options, ['issues', 'prs', 'status', 'engagement', 'assignments'], field)
 
   const issues = assertObject(options.issues, `${field}.issues`)
   assertKeys(issues, ['new', 'comments'], `${field}.issues`)
@@ -160,6 +172,8 @@ const parseOptions = (value: unknown, field: string): DigestOptions => {
   assertKeys(prs, ['new', 'comments', 'updates'], `${field}.prs`)
   const status = assertObject(options.status, `${field}.status`)
   assertKeys(status, ['open', 'draft', 'applied', 'closed'], `${field}.status`)
+  const engagement = assertObject(options.engagement, `${field}.engagement`)
+  assertKeys(engagement, ['reactions', 'zaps'], `${field}.engagement`)
 
   return {
     issues: {
@@ -177,7 +191,53 @@ const parseOptions = (value: unknown, field: string): DigestOptions => {
       applied: assertBoolean(status.applied, `${field}.status.applied`),
       closed: assertBoolean(status.closed, `${field}.status.closed`),
     },
+    engagement: {
+      reactions: assertBoolean(engagement.reactions, `${field}.engagement.reactions`),
+      zaps: assertBoolean(engagement.zaps, `${field}.engagement.zaps`),
+    },
     assignments: assertBoolean(options.assignments, `${field}.assignments`),
+  }
+}
+
+const parseLocale = (value: unknown) => {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value.length > 64) {
+    throw new ValidationError('locale is invalid')
+  }
+  try {
+    return new Intl.Locale(value).toString()
+  } catch {
+    throw new ValidationError('locale is invalid')
+  }
+}
+
+const parseCadence = (value: unknown) => {
+  const cadence = assertObject(value, 'cadence')
+  assertKeys(cadence, ['intervalDays', 'localTime', 'timezone'], 'cadence')
+  if (
+    !Number.isInteger(cadence.intervalDays) ||
+    (cadence.intervalDays as number) < 1 ||
+    (cadence.intervalDays as number) > 30
+  ) {
+    throw new ValidationError('cadence.intervalDays must be an integer from 1 to 30')
+  }
+  if (
+    typeof cadence.localTime !== 'string' ||
+    !/^([01]\d|2[0-3]):[0-5]\d$/.test(cadence.localTime)
+  ) {
+    throw new ValidationError('cadence.localTime must use HH:MM')
+  }
+  if (
+    typeof cadence.timezone !== 'string' ||
+    !IANAZone.isValidZone(cadence.timezone) ||
+    !DateTime.local().setZone(cadence.timezone).isValid
+  ) {
+    throw new ValidationError('cadence.timezone must be a valid IANA timezone')
+  }
+  return {
+    intervalDays: cadence.intervalDays as number,
+    localTime: cadence.localTime,
+    timezone: cadence.timezone,
   }
 }
 
@@ -191,9 +251,11 @@ export const hasSelectedActivity = (options: DigestOptions) =>
   options.status.draft ||
   options.status.applied ||
   options.status.closed ||
+  options.engagement.reactions ||
+  options.engagement.zaps ||
   options.assignments
 
-export function parseDigestConfig(plaintext: string): DigestConfig {
+export function parseDigestConfig(plaintext: string): RepositoryDigestConfig {
   if (Buffer.byteLength(plaintext, 'utf8') > MAX_PAYLOAD_BYTES) {
     throw new ValidationError('encrypted payload exceeds 64 KiB')
   }
@@ -216,41 +278,17 @@ export function parseDigestConfig(plaintext: string): DigestConfig {
     throw new ValidationError('channel must be email-digest')
   }
 
-  let locale: string | undefined
-  if (value.locale !== undefined) {
-    if (typeof value.locale !== 'string' || value.locale.length > 64) {
-      throw new ValidationError('locale is invalid')
-    }
-    try {
-      locale = new Intl.Locale(value.locale).toString()
-    } catch {
-      throw new ValidationError('locale is invalid')
-    }
-  }
-
-  const cadence = assertObject(value.cadence, 'cadence')
-  assertKeys(cadence, ['intervalDays', 'localTime', 'timezone'], 'cadence')
-  if (
-    !Number.isInteger(cadence.intervalDays) ||
-    (cadence.intervalDays as number) < 1 ||
-    (cadence.intervalDays as number) > 30
-  ) {
-    throw new ValidationError('cadence.intervalDays must be an integer from 1 to 30')
-  }
-  if (typeof cadence.localTime !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(cadence.localTime)) {
-    throw new ValidationError('cadence.localTime must use HH:MM')
-  }
-  if (typeof cadence.timezone !== 'string' || !IANAZone.isValidZone(cadence.timezone)) {
-    throw new ValidationError('cadence.timezone must be a valid IANA timezone')
-  }
-  if (!DateTime.local().setZone(cadence.timezone).isValid) {
-    throw new ValidationError('cadence.timezone must be a valid IANA timezone')
-  }
+  const locale = parseLocale(value.locale)
+  const cadence = parseCadence(value.cadence)
 
   const handler = assertObject(value.handler, 'handler')
   assertKeys(handler, ['address', 'relay'], 'handler')
 
-  if (!Array.isArray(value.repositories) || value.repositories.length < 1 || value.repositories.length > 50) {
+  if (
+    !Array.isArray(value.repositories) ||
+    value.repositories.length < 1 ||
+    value.repositories.length > 50
+  ) {
     throw new ValidationError('repositories must contain between 1 and 50 entries')
   }
 
@@ -261,7 +299,8 @@ export function parseDigestConfig(plaintext: string): DigestConfig {
     const repository = assertObject(item, field)
     assertKeys(repository, ['address', 'name', 'relays', 'options'], field)
     const address = normalizeAddress(repository.address, 30617, `${field}.address`)
-    if (addresses.has(address)) throw new ValidationError('repositories contain a duplicate address')
+    if (addresses.has(address))
+      throw new ValidationError('repositories contain a duplicate address')
     addresses.add(address)
 
     if (
@@ -272,14 +311,18 @@ export function parseDigestConfig(plaintext: string): DigestConfig {
     ) {
       throw new ValidationError(`${field}.name is invalid`)
     }
-    if (!Array.isArray(repository.relays) || repository.relays.length < 1 || repository.relays.length > 3) {
-      throw new ValidationError(`${field}.relays must contain between 1 and 3 URLs`)
+    if (
+      !Array.isArray(repository.relays) ||
+      repository.relays.length < 1 ||
+      repository.relays.length > 3
+    ) {
+      throw new ValidationError(`${field}.relays must contain between 1 and 3 lookup URLs`)
     }
     const relays = repository.relays.map((relay, relayIndex) =>
       normalizeRelayUrl(relay, `${field}.relays[${relayIndex}]`)
     )
     if (new Set(relays).size !== relays.length) {
-      throw new ValidationError(`${field}.relays contains a duplicate URL`)
+      throw new ValidationError(`${field}.relays contains a duplicate lookup URL`)
     }
     relays.forEach((relay) => uniqueRelays.add(relay))
 
@@ -293,7 +336,7 @@ export function parseDigestConfig(plaintext: string): DigestConfig {
 
   const handlerRelay = normalizeRelayUrl(handler.relay, 'handler.relay')
   if (uniqueRelays.size > 20) {
-    throw new ValidationError('configuration uses more than 20 unique repository relays')
+    throw new ValidationError('configuration uses more than 20 unique repository lookup relays')
   }
   if (!repositories.some((repository) => hasSelectedActivity(repository.options))) {
     throw new ValidationError('configuration selects no activity')
@@ -306,7 +349,7 @@ export function parseDigestConfig(plaintext: string): DigestConfig {
     manageUrl: normalizeHttpsUrl(value.manageUrl, 'manageUrl'),
     ...(locale ? { locale } : {}),
     cadence: {
-      intervalDays: cadence.intervalDays as number,
+      intervalDays: cadence.intervalDays,
       localTime: cadence.localTime,
       timezone: cadence.timezone,
     },
@@ -318,10 +361,101 @@ export function parseDigestConfig(plaintext: string): DigestConfig {
   }
 }
 
+const parseBooleanGroup = <T extends string>(
+  value: unknown,
+  field: string,
+  keys: readonly T[]
+): Record<T, boolean> => {
+  const group = assertObject(value, field)
+  assertKeys(group, [...keys], field)
+  if (Object.keys(group).length !== keys.length) {
+    throw new ValidationError(`${field} must contain exactly ${keys.join(', ')}`)
+  }
+  return Object.fromEntries(
+    keys.map((key) => [key, assertBoolean(group[key], `${field}.${key}`)])
+  ) as Record<T, boolean>
+}
+
+export function parseCommunityDigestConfig(
+  plaintext: string,
+  expectedCommunityPubkey: string
+): CommunityDigestConfig {
+  if (Buffer.byteLength(plaintext, 'utf8') > MAX_PAYLOAD_BYTES) {
+    throw new ValidationError('encrypted payload exceeds 64 KiB')
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(plaintext)
+  } catch {
+    throw new ValidationError('encrypted payload is not valid JSON')
+  }
+  const value = assertObject(parsed, 'payload')
+  assertKeys(
+    value,
+    ['version', 'channel', 'community', 'email', 'manageUrl', 'locale', 'cadence', 'preferences'],
+    'payload'
+  )
+  if (value.version !== 1) throw new ValidationError('version must be 1')
+  if (value.channel !== 'community-alerts') {
+    throw new ValidationError('channel must be community-alerts')
+  }
+  if (value.community !== expectedCommunityPubkey) {
+    throw new ValidationError('community must match the configured community pubkey')
+  }
+  const preferences = assertObject(value.preferences, 'preferences')
+  assertKeys(
+    preferences,
+    ['density', 'engagement', 'access', 'moderation', 'highlights'],
+    'preferences'
+  )
+  if (Object.keys(preferences).length !== 5) {
+    throw new ValidationError('preferences must contain every preference group')
+  }
+  if (!['compact', 'expanded'].includes(preferences.density as string)) {
+    throw new ValidationError('preferences.density must be compact or expanded')
+  }
+  const locale = parseLocale(value.locale)
+
+  return {
+    version: 1,
+    channel: 'community-alerts',
+    community: expectedCommunityPubkey,
+    email: normalizeEmail(value.email),
+    manageUrl: normalizeHttpsUrl(value.manageUrl, 'manageUrl'),
+    ...(locale ? { locale } : {}),
+    cadence: parseCadence(value.cadence),
+    preferences: {
+      density: preferences.density as 'compact' | 'expanded',
+      engagement: parseBooleanGroup(preferences.engagement, 'preferences.engagement', [
+        'replies',
+        'mentions',
+        'reactions',
+        'zaps',
+      ]),
+      access: parseBooleanGroup(preferences.access, 'preferences.access', [
+        'membership',
+        'publishing',
+        'moderatorRequests',
+      ]),
+      moderation: parseBooleanGroup(preferences.moderation, 'preferences.moderation', [
+        'reports',
+        'actions',
+      ]),
+      highlights: parseBooleanGroup(preferences.highlights, 'preferences.highlights', [
+        'rooms',
+        'threads',
+        'calendar',
+        'goals',
+      ]),
+    },
+  }
+}
+
 export function validateSubscriptionEvent(
   event: SignedEvent,
   anchorPubkey: string,
-  currentTime = Math.floor(Date.now() / 1000)
+  currentTime = Math.floor(Date.now() / 1000),
+  identifier = DIGEST_IDENTIFIER
 ) {
   if (event.kind !== DIGEST_SUBSCRIPTION_KIND) {
     throw new ValidationError(`event kind must be ${DIGEST_SUBSCRIPTION_KIND}`)
@@ -333,26 +467,27 @@ export function validateSubscriptionEvent(
   if (event.created_at > currentTime + MAX_EVENT_FUTURE_SECONDS) {
     throw new ValidationError('event is too far in the future')
   }
-  if (
-    event.tags.length !== 2 ||
-    event.tags.some((tag) => tag.length !== 2) ||
-    event.tags.filter((tag) => tag[0] === 'd' && tag[1] === DIGEST_IDENTIFIER).length !== 1 ||
-    event.tags.filter((tag) => tag[0] === 'p' && tag[1] === anchorPubkey).length !== 1
-  ) {
-    throw new ValidationError(
-      `event tags must be exactly d=${DIGEST_IDENTIFIER} and p=<Anchor pubkey>`
-    )
+  const expected = [
+    ['d', identifier],
+    ['p', anchorPubkey],
+  ]
+  if (JSON.stringify(event.tags) !== JSON.stringify(expected)) {
+    throw new ValidationError(`event tags must be exactly d=${identifier} and p=<Anchor pubkey>`)
   }
 }
 
-export const getSubscriptionAddress = (pubkey: string) =>
-  `${DIGEST_SUBSCRIPTION_KIND}:${pubkey}:${DIGEST_IDENTIFIER}`
+export const getSubscriptionAddress = (pubkey: string, identifier = DIGEST_IDENTIFIER) =>
+  `${DIGEST_SUBSCRIPTION_KIND}:${pubkey}:${identifier}`
 
-export function validateSubscriptionDeletionEvent(event: SignedEvent, anchorPubkey: string) {
+export function validateSubscriptionDeletionEvent(
+  event: SignedEvent,
+  anchorPubkey: string,
+  identifier = DIGEST_IDENTIFIER
+) {
   if (event.kind !== DELETE) throw new ValidationError(`event kind must be ${DELETE}`)
 
   const expected = [
-    ['a', getSubscriptionAddress(event.pubkey)],
+    ['a', getSubscriptionAddress(event.pubkey, identifier)],
     ['p', anchorPubkey],
   ]
   if (JSON.stringify(event.tags) !== JSON.stringify(expected)) {
@@ -361,3 +496,8 @@ export function validateSubscriptionDeletionEvent(event: SignedEvent, anchorPubk
     )
   }
 }
+
+export const parseConfigForMode = (plaintext: string, mode: AnchorMode) =>
+  mode.mode === 'community'
+    ? parseCommunityDigestConfig(plaintext, mode.communityPubkey)
+    : parseDigestConfig(plaintext)
